@@ -1,9 +1,9 @@
 {$SERVER_NAME}
 
-# Handle requests for /ohttp-relay (with and without trailing slash)
-handle /ohttp-relay* {
-	uri strip_prefix /ohttp-relay
+# Handle requests without trailing slash
+rewrite /ohttp-relay /ohttp-relay/
 
+handle_path /ohttp-relay/* {
 	reverse_proxy {$OHTTP_GATEWAY} {
 		header_up -*
 	}
