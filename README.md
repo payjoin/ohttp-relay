@@ -1,26 +1,31 @@
 # Payjoin OHTTP Relay
 
-Relays [Oblivious HTTP](https://ietf-wg-ohai.github.io/oblivious-http/draft-ietf-ohai-ohttp.html) requests to protect IP metadata in the [Payjoin v2](https://github.com/bitcoin/bips/pull/1483) protocol. This is based on a caddy server.
+Relays [Oblivious HTTP](https://ietf-wg-ohai.github.io/oblivious-http/draft-ietf-ohai-ohttp.html) requests to protect IP metadata in the [Payjoin v2](https://github.com/bitcoin/bips/pull/1483) protocol. This is based on an [nginx](https://nginx.org) server.
+
+This OHTTP Relay may be generic enough for other applications, too.
 
 
 ## Deploying the Image with Proper TLS Support
 
 - Building the Docker Image:
 - Ensure Docker is installed on your system.
-- Clone the repository containing the Dockerfile and Caddyfile.
+- Clone the repository containing the `Dockerfile` and `nginx.conf`.
 - Navigate to the directory and build the Docker image:
 
 ```bash
-
-docker build -t caddy-ohttp-relay .
+docker build -t nginx-ohttp-relay .
 ```
 
 ## Running the Docker Container for Production
 
-To run the Caddy server with automatic HTTPS, execute the following command, replacing your_server_name and your_gateway_url with your actual server name and OHTTP gateway URL:
+To run the nginx server with automatic HTTPS, execute the following command, replacing your_server_name and your_gateway_url with your actual server name and OHTTP gateway URL:
+
 
 ```bash
+envsubst '$SERVER_NAME $OHTTP_GATEWAY' < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
+```
 
+```bash
 docker run -d -p 80:80 -p 443:443 \
   -e SERVER_NAME='your_server_name' \
   -e OHTTP_GATEWAY='your_gateway_url' \
