@@ -7,9 +7,8 @@ if [ -z "$OHTTP_GATEWAY" ] || [ -z "$SERVER_NAME" ]; then
 fi
 
 # Substitute environment variables in nginx.conf
-envsubst '${OHTTP_GATEWAY},${SERVER_NAME}' < /etc/nginx/nginx.template.conf > /etc/nginx/nginx.conf
-ls /etc/nginx/modules
+envsubst '${OHTTP_GATEWAY},${SERVER_NAME}' < /usr/local/openresty/nginx/conf/nginx.conf.template > /usr/local/openresty/nginx/conf/nginx.conf
 
 # Start Nginx in the foreground
-nginx -g 'daemon off;'
+openresty -g 'daemon off;'
 
