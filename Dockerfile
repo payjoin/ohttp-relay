@@ -1,4 +1,4 @@
-FROM openresty/openresty:latest as builder
+FROM debian:bullseye-slim as builder
 
 # Install necessary dependencies
 RUN apt-get update && apt-get install -y \
@@ -7,38 +7,32 @@ RUN apt-get update && apt-get install -y \
     make \
     openssl \
     libpcre3-dev \
+    perl \
     zlib1g-dev \
     libssl-dev \
     wget \
-    patch \
-    lua5.1-dev
+    patch 
 
 # Download sources
-RUN wget https://nginx.org/download/nginx-1.25.3.tar.gz \
-    && tar -xzvf nginx-1.25.3.tar.gz \
-#    && wget https://github.com/openresty/headers-more-nginx-module/archive/v0.36.tar.gz \
-#    && tar -xzvf v0.36.tar.gz \
-    && wget https://github.com/openresty/lua-nginx-module/archive/refs/tags/v0.10.25.tar.gz \
-    && tar -xzvf v0.10.25.tar.gz \
+RUN wget https://openresty.org/download/openresty-1.21.4.1.tar.gz \
+    && tar -xzvf openresty-1.21.4.1.tar.gz \
     && wget https://github.com/chobits/ngx_http_proxy_connect_module/archive/refs/tags/v0.0.5.tar.gz \
     && tar -xzvf v0.0.5.tar.gz
 
-# Compile Nginx with headers-more-nginx-module
-RUN cd /nginx-1.25.3 \
-    && patch -p1 < ../ngx_http_proxy_connect_module-0.0.5/patch/proxy_connect_rewrite_102101.patch \
-    && ./configure --with-compat --add-dynamic-module=../lua-nginx-module-0.10.25 --add-dynamic-module=../ngx_http_proxy_connect_module-0.0.5 \
-    && make modules
+# Compile OpenResty with ngx_http_proxy_connect_module
+RUN cd /openresty-1.21.4.1 \
+    && ./configure --add-module=../ngx_http_proxy_connect_module-0.0.5 \
+    && patch -d build/nginx-1.21.4/ -p 1 < ../ngx_http_proxy_connect_module-0.0.5/patch/proxy_connect_rewrite_102101.patch \
+    && make && make install
 
 # Final stage
-FROM nginx:latest
+FROM debian:bullseye-slim
 
-# Copy compiled modules
-#COPY --from=builder /nginx-1.25.3/objs/ngx_http_headers_more_filter_module.so /etc/nginx/modules/
-COPY --from=builder /nginx-1.25.3/objs/ngx_http_lua_module.so /etc/nginx/modules/
-COPY --from=builder /nginx-1.25.3/objs/ngx_http_proxy_connect_module.so /etc/nginx/modules/
+# Copy compiled binary
+COPY --from=builder /usr/local/openresty /usr/local/openresty
 
 # Copy the Nginx config
-COPY nginx.template.conf /etc/nginx/nginx.template.conf
+COPY default.conf.template /etc/nginx/conf.d/default.conf.template
 
 EXPOSE 80
 

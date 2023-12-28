@@ -1,0 +1,72 @@
+
+# Logging settings
+access_log    logs/access.log;
+error_log     logs/error.log;
+
+# DNS resolver used to check allowed_hosts
+resolver 1.1.1.1;
+
+# Server block for HTTP
+server {
+    listen 80;
+    server_name ${SERVER_NAME}; # Replace ${SERVER_NAME} with your actual server name
+
+    location ~ ^/ohttp-relay(/|$) {
+        access_by_lua_block {
+            local headers = ngx.req.get_headers()
+            for k, _ in pairs(headers) do
+                ngx.req.clear_header(k)
+            end
+        }
+        proxy_pass https://${OHTTP_GATEWAY}; # Replace ${OHTTP_GATEWAY} with your actual gateway address
+        # Strip the /ohttp-relay prefix
+        rewrite ^/ohttp-relay(/.*)$ $1 break;
+    }
+}
+
+# Server block for HTTPS
+server {
+    listen 443 ssl;
+    server_name ${SERVER_NAME}; # Replace ${SERVER_NAME} with your actual server name
+
+    # SSL configuration
+    ssl_certificate     /etc/nginx/ssl/nginx.crt;
+    ssl_certificate_key /etc/nginx/ssl/nginx.key;
+
+    # SSL settings
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers 'ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384';
+    ssl_prefer_server_ciphers on;
+
+    location ~ ^/ohttp-relay(/|$) {
+        access_by_lua_block {
+            local headers = ngx.req.get_headers()
+            for k, _ in pairs(headers) do
+                ngx.req.clear_header(k)
+            end
+        }
+        proxy_pass https://${OHTTP_GATEWAY}; # Replace ${OHTTP_GATEWAY} with your actual gateway address
+        # Strip the /ohttp-relay prefix
+        rewrite ^/ohttp-relay(/.*)$ $1 break;
+    }
+
+    # Special handling for CONNECT method with HTTPS
+    proxy_connect;
+    proxy_connect_allow 443;
+    proxy_connect_connect_timeout 10s;
+    proxy_connect_read_timeout 10s;
+    proxy_connect_send_timeout 10s;
+
+    access_by_lua_block {
+        # whitelist alowed CONNECT hosts
+        local env_hosts = os.getenv("OHTTP_GATEWAY") or ""
+        local allowed_hosts = {}
+        for host in string.gmatch(env_hosts, '([^,]+)') do
+            allowed_hosts[host] = true
+        end
+
+        if not allowed_hosts[ngx.var.host] then
+            ngx.exit(ngx.HTTP_FORBIDDEN)
+        end
+    }
+}
