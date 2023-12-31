@@ -15,14 +15,26 @@ This OHTTP Relay may be generic enough for other applications, too.
 docker build -t ohttp-relay .
 ```
 
-## Running the Docker Container for Production
+## Running the Docker Container Locally
 
-To run the nginx server with automatic HTTPS, execute the following command, replacing your_server_name and your_gateway_url with your actual server name and OHTTP gateway domain:
+To run the nginx server with automatic localhost HTTPS, execute the following command, replacing your_server_name and your_gateway_url with your actual server name and OHTTP gateway domain: 
+
+```bash
+docker run -d -p 80:80 -p 443:443 \
+  -e SERVER_NAME='localhost' \
+  -e OHTTP_GATEWAY='your_gateway_domain' \
+  --name my-ohttp-relay ohttp-relay
+```
+
+## Running the Docker Container in Production with Proper TLS Certificates
+
+To configure the relay to use proper TLS certificates for production, place them in a folder and pass them as follows, replacing `/path/to/your/certs` with the path to that folder, `your_server_name` with the domain your server shall host, and `your_gateway_domain` with the OHTTP gateway domain.
 
 ```bash
 docker run -d -p 80:80 -p 443:443 \
   -e SERVER_NAME='your_server_name' \
   -e OHTTP_GATEWAY='your_gateway_domain' \
+  -v /path/to/your/certs:/etc/nginx/ssl:ro \
   --name my-ohttp-relay ohttp-relay
 ```
 
