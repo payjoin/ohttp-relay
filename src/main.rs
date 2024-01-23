@@ -1,25 +1,37 @@
 use std::net::SocketAddr;
 
-use hyper::body::Incoming;
-use hyper::header::{CONTENT_LENGTH, CONTENT_TYPE, HOST};
+use http_body_util::combinators::BoxBody;
+use http_body_util::{BodyExt, Full};
+use hyper::body::Bytes;
+use hyper::header::{HeaderValue, CONTENT_LENGTH, CONTENT_TYPE, HOST};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
-use hyper::{Request, Response};
+use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use tokio::net::{TcpListener, TcpStream};
 
 const PAYJO_IN: &str = "payjo.in";
 const OHTTP_RELAY_HOST: &str = "localhost";
+const EXPECTED_MEDIA_TYPE: &str = "message/ohttp-req";
 
 async fn ohttp_relay(
     mut req: Request<hyper::body::Incoming>,
-) -> Result<Response<Incoming>, hyper::Error> {
+) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
+    if req.method() != hyper::Method::POST {
+        return Ok(Response::builder()
+            .status(StatusCode::METHOD_NOT_ALLOWED)
+            .body(full("Method Not Allowed"))
+            .unwrap());
+    }
     let content_type_header = req.headers().get(CONTENT_TYPE).cloned();
     let content_length_header = req.headers().get(CONTENT_LENGTH).cloned();
     req.headers_mut().clear();
     req.headers_mut().insert(HOST, OHTTP_RELAY_HOST.parse().unwrap());
-    if let Some(content_type) = content_type_header {
-        req.headers_mut().insert(CONTENT_TYPE, content_type);
+    if content_type_header != Some(HeaderValue::from_str(EXPECTED_MEDIA_TYPE).unwrap()) {
+        return Ok(Response::builder()
+            .status(StatusCode::UNSUPPORTED_MEDIA_TYPE)
+            .body(full("Unsupported Media Type"))
+            .unwrap());
     }
     if let Some(content_length) = content_length_header {
         req.headers_mut().insert(CONTENT_LENGTH, content_length);
@@ -52,6 +64,7 @@ async fn ohttp_relay(
         sender.send_request(req).await
     }
     .await
+    .map(|b| Response::new(b.boxed()))
 }
 
 #[tokio::main]
@@ -72,4 +85,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }
         });
     }
+}
+
+fn full<T: Into<Bytes>>(chunk: T) -> BoxBody<Bytes, hyper::Error> {
+    Full::new(chunk.into()).map_err(|never| match never {}).boxed()
 }
