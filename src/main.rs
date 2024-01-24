@@ -8,11 +8,14 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
+use once_cell::sync::Lazy;
 use tokio::net::{TcpListener, TcpStream};
 
 const PAYJO_IN: &str = "payjo.in";
-const OHTTP_RELAY_HOST: &str = "localhost";
-const EXPECTED_MEDIA_TYPE: &str = "message/ohttp-req";
+static OHTTP_RELAY_HOST: Lazy<HeaderValue> =
+    Lazy::new(|| HeaderValue::from_str("localhost").expect("Invalid HeaderValue"));
+static EXPECTED_MEDIA_TYPE: Lazy<HeaderValue> =
+    Lazy::new(|| HeaderValue::from_str("message/ohttp-req").expect("Invalid HeaderValue"));
 
 async fn ohttp_relay(
     mut req: Request<hyper::body::Incoming>,
@@ -26,8 +29,8 @@ async fn ohttp_relay(
     let content_type_header = req.headers().get(CONTENT_TYPE).cloned();
     let content_length_header = req.headers().get(CONTENT_LENGTH).cloned();
     req.headers_mut().clear();
-    req.headers_mut().insert(HOST, OHTTP_RELAY_HOST.parse().unwrap());
-    if content_type_header != Some(HeaderValue::from_str(EXPECTED_MEDIA_TYPE).unwrap()) {
+    req.headers_mut().insert(HOST, OHTTP_RELAY_HOST.to_owned());
+    if content_type_header != Some(EXPECTED_MEDIA_TYPE.to_owned()) {
         return Ok(Response::builder()
             .status(StatusCode::UNSUPPORTED_MEDIA_TYPE)
             .body(full("Unsupported Media Type"))
