@@ -5,6 +5,7 @@ use hyper::{Response, StatusCode};
 
 use crate::{empty, full};
 
+#[derive(Debug)]
 pub(crate) enum Error {
     BadGateway,
     MethodNotAllowed,
@@ -21,10 +22,23 @@ impl Error {
             Self::MethodNotAllowed => *res.status_mut() = StatusCode::METHOD_NOT_ALLOWED,
             Self::BadRequest(e) => {
                 *res.status_mut() = StatusCode::BAD_REQUEST;
-                *res.body_mut() = full(e.clone()).boxed();
+                *res.body_mut() = full(e.to_string()).boxed();
             }
         };
 
         res
     }
 }
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::UnsupportedMediaType => write!(f, "Unsupported media type"),
+            Self::BadGateway => write!(f, "Bad gateway"),
+            Self::MethodNotAllowed => write!(f, "Method not allowed"),
+            Self::BadRequest(e) => write!(f, "Bad request: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for Error {}

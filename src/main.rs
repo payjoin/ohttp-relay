@@ -43,28 +43,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 async fn ohttp_relay(
     req: Request<Incoming>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
-    let fwd_req = match into_forward_req(req) {
-        Ok(req) => req,
-        Err(e) => return Ok(e.to_response()),
-    };
-    let host = fwd_req.uri().host().expect("uri has no host");
-    let port = fwd_req.uri().port_u16().unwrap_or(80);
-    let addr = format!("{}:{}", host, port);
-    async move {
-        let client_stream = TcpStream::connect(addr).await.unwrap();
-        let io = TokioIo::new(client_stream);
+    let res = handle_ohttp_relay(req).await.unwrap_or_else(|e| e.to_response());
+    Ok(res)
+}
 
-        let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
-        tokio::task::spawn(async move {
-            if let Err(err) = conn.await {
-                println!("Connection failed: {:?}", err);
-            }
-        });
-
-        sender.send_request(fwd_req).await
-    }
-    .await
-    .map(|b| Response::new(b.boxed()))
+async fn handle_ohttp_relay(
+    req: Request<Incoming>,
+) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Error> {
+    let fwd_req = into_forward_req(req)?;
+    forward_request(fwd_req).await.map(|res| Response::new(res.boxed()))
 }
 
 /// Convert an incoming request into a request to forward to the target gateway server.
@@ -88,10 +75,29 @@ fn into_forward_req(mut req: Request<Incoming>) -> Result<Request<Incoming>, Err
         PAYJO_IN,
         req.uri().path_and_query().map(|x| x.as_str()).unwrap_or("/")
     );
-    let uri = uri_string.parse().unwrap();
+    let uri = uri_string.parse().map_err(|_| Error::BadRequest("Invalid target uri".to_owned()))?;
     println!("uri: {:?}", uri);
     *req.uri_mut() = uri;
     Ok(req)
+}
+
+async fn forward_request(req: Request<Incoming>) -> Result<Response<Incoming>, Error> {
+    let host =
+        req.uri().host().ok_or_else(|| Error::BadRequest("Target uri has no host".to_owned()))?;
+    let port = req.uri().port_u16().unwrap_or(80);
+    let addr = format!("{}:{}", host, port);
+    let client_stream = TcpStream::connect(addr).await.map_err(|_| Error::BadGateway)?;
+    let io = TokioIo::new(client_stream);
+
+    let (mut sender, conn) =
+        hyper::client::conn::http1::handshake(io).await.map_err(|_| Error::BadGateway)?;
+    tokio::task::spawn(async move {
+        if let Err(err) = conn.await {
+            println!("Connection failed: {:?}", err);
+        }
+    });
+
+    sender.send_request(req).await.map_err(|_| Error::BadGateway)
 }
 
 fn empty() -> BoxBody<Bytes, hyper::Error> {
