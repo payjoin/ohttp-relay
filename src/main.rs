@@ -7,9 +7,11 @@ use hyper::header::{HeaderValue, CONTENT_LENGTH, CONTENT_TYPE, HOST};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
-use hyper_util::rt::TokioIo;
+use hyper_rustls::HttpsConnectorBuilder;
+use hyper_util::client::legacy::Client;
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use once_cell::sync::Lazy;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 
 mod error;
 use crate::error::Error;
@@ -71,7 +73,7 @@ fn into_forward_req(mut req: Request<Incoming>) -> Result<Request<Incoming>, Err
     }
 
     let uri_string = format!(
-        "http://{}{}",
+        "https://{}{}",
         PAYJO_IN,
         req.uri().path_and_query().map(|x| x.as_str()).unwrap_or("/")
     );
@@ -82,22 +84,10 @@ fn into_forward_req(mut req: Request<Incoming>) -> Result<Request<Incoming>, Err
 }
 
 async fn forward_request(req: Request<Incoming>) -> Result<Response<Incoming>, Error> {
-    let host =
-        req.uri().host().ok_or_else(|| Error::BadRequest("Target uri has no host".to_owned()))?;
-    let port = req.uri().port_u16().unwrap_or(80);
-    let addr = format!("{}:{}", host, port);
-    let client_stream = TcpStream::connect(addr).await.map_err(|_| Error::BadGateway)?;
-    let io = TokioIo::new(client_stream);
-
-    let (mut sender, conn) =
-        hyper::client::conn::http1::handshake(io).await.map_err(|_| Error::BadGateway)?;
-    tokio::task::spawn(async move {
-        if let Err(err) = conn.await {
-            println!("Connection failed: {:?}", err);
-        }
-    });
-
-    sender.send_request(req).await.map_err(|_| Error::BadGateway)
+    let https =
+        HttpsConnectorBuilder::new().with_webpki_roots().https_or_http().enable_http1().build();
+    let client = Client::builder(TokioExecutor::new()).build(https);
+    client.request(req).await.map_err(|_| Error::BadGateway)
 }
 
 fn empty() -> BoxBody<Bytes, hyper::Error> {
