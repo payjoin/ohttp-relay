@@ -1,8 +1,8 @@
 use std::net::SocketAddr;
 
 use http_body_util::combinators::BoxBody;
-use http_body_util::{BodyExt, Full};
-use hyper::body::Bytes;
+use http_body_util::{BodyExt, Empty};
+use hyper::body::{Bytes, Incoming};
 use hyper::header::{HeaderValue, CONTENT_LENGTH, CONTENT_TYPE, HOST};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -10,6 +10,8 @@ use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use once_cell::sync::Lazy;
 use tokio::net::{TcpListener, TcpStream};
+
+type Error = StatusCode;
 
 const PAYJO_IN: &str = "payjo.in";
 static OHTTP_RELAY_HOST: Lazy<HeaderValue> =
@@ -38,23 +40,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 }
 
 async fn ohttp_relay(
-    mut req: Request<hyper::body::Incoming>,
+    req: Request<Incoming>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
+    let fwd_req = match into_forward_req(req) {
+        Ok(req) => req,
+        Err(code) => {
+            let mut res = Response::new(empty());
+            *res.status_mut() = code;
+            return Ok(res)
+        }
+    };
+    let host = fwd_req.uri().host().expect("uri has no host");
+    let port = fwd_req.uri().port_u16().unwrap_or(80);
+    let addr = format!("{}:{}", host, port);
+    async move {
+        let client_stream = TcpStream::connect(addr).await.unwrap();
+        let io = TokioIo::new(client_stream);
+
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
+        tokio::task::spawn(async move {
+            if let Err(err) = conn.await {
+                println!("Connection failed: {:?}", err);
+            }
+        });
+
+        sender.send_request(fwd_req).await
+    }
+    .await
+    .map(|b| Response::new(b.boxed()))
+}
+
+/// Convert an incoming request into a request to forward to the target gateway server.
+fn into_forward_req(mut req: Request<Incoming>) -> Result<Request<Incoming>, Error> {
     if req.method() != hyper::Method::POST {
-        return Ok(Response::builder()
-            .status(StatusCode::METHOD_NOT_ALLOWED)
-            .body(full("Method Not Allowed"))
-            .unwrap());
+        return Err(StatusCode::METHOD_NOT_ALLOWED);
     }
     let content_type_header = req.headers().get(CONTENT_TYPE).cloned();
     let content_length_header = req.headers().get(CONTENT_LENGTH).cloned();
     req.headers_mut().clear();
     req.headers_mut().insert(HOST, OHTTP_RELAY_HOST.to_owned());
     if content_type_header != Some(EXPECTED_MEDIA_TYPE.to_owned()) {
-        return Ok(Response::builder()
-            .status(StatusCode::UNSUPPORTED_MEDIA_TYPE)
-            .body(full("Unsupported Media Type"))
-            .unwrap());
+        return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
     if let Some(content_length) = content_length_header {
         req.headers_mut().insert(CONTENT_LENGTH, content_length);
@@ -68,28 +94,11 @@ async fn ohttp_relay(
     let uri = uri_string.parse().unwrap();
     println!("uri: {:?}", uri);
     *req.uri_mut() = uri;
-
-    let host = req.uri().host().expect("uri has no host");
-    let port = req.uri().port_u16().unwrap_or(80);
-    let addr = format!("{}:{}", host, port);
-
-    async move {
-        let client_stream = TcpStream::connect(addr).await.unwrap();
-        let io = TokioIo::new(client_stream);
-
-        let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
-        tokio::task::spawn(async move {
-            if let Err(err) = conn.await {
-                println!("Connection failed: {:?}", err);
-            }
-        });
-
-        sender.send_request(req).await
-    }
-    .await
-    .map(|b| Response::new(b.boxed()))
+    Ok(req)
 }
 
-fn full<T: Into<Bytes>>(chunk: T) -> BoxBody<Bytes, hyper::Error> {
-    Full::new(chunk.into()).map_err(|never| match never {}).boxed()
+fn empty() -> BoxBody<Bytes, hyper::Error> {
+    Empty::<Bytes>::new()
+        .map_err(|never| match never {})
+        .boxed()
 }
