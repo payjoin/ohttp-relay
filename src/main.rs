@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Empty, Full};
@@ -17,7 +18,6 @@ mod error;
 use crate::error::Error;
 
 const DEFAULT_PORT: u16 = 3000;
-const PAYJO_IN: &str = "payjo.in";
 static OHTTP_RELAY_HOST: Lazy<HeaderValue> =
     Lazy::new(|| HeaderValue::from_str("localhost").expect("Invalid HeaderValue"));
 static EXPECTED_MEDIA_TYPE: Lazy<HeaderValue> =
@@ -27,21 +27,30 @@ static EXPECTED_MEDIA_TYPE: Lazy<HeaderValue> =
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let port: u16 =
         std::env::var("PORT").map(|s| s.parse().expect("Invalid PORT")).unwrap_or(DEFAULT_PORT);
-    ohttp_relay(port).await
+    let gateway_origin = std::env::var("GATEWAY_ORIGIN").expect("GATEWAY_ORIGIN is required");
+    ohttp_relay(port, gateway_origin).await
 }
 
-async fn ohttp_relay(port: u16) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn ohttp_relay(
+    port: u16,
+    gateway_origin: String,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
 
     let listener = TcpListener::bind(addr).await?;
-
+    println!("OHTTP relay listening on http://{}", addr);
+    let gateway_origin = Arc::new(gateway_origin);
     loop {
         let (stream, _) = listener.accept().await?;
         let io = TokioIo::new(stream);
-
+        let gateway_origin = gateway_origin.clone();
         tokio::task::spawn(async move {
-            if let Err(err) =
-                http1::Builder::new().serve_connection(io, service_fn(serve_ohttp_relay)).await
+            if let Err(err) = http1::Builder::new()
+                .serve_connection(
+                    io,
+                    service_fn(move |req| serve_ohttp_relay(req, gateway_origin.clone())),
+                )
+                .await
             {
                 println!("Error serving connection: {:?}", err);
             }
@@ -51,15 +60,18 @@ async fn ohttp_relay(port: u16) -> Result<(), Box<dyn std::error::Error + Send +
 
 async fn serve_ohttp_relay(
     req: Request<Incoming>,
+    gateway_origin: Arc<String>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
-    let res = handle_ohttp_relay(req).await.unwrap_or_else(|e| e.to_response());
+    let res =
+        handle_ohttp_relay(req, gateway_origin.as_str()).await.unwrap_or_else(|e| e.to_response());
     Ok(res)
 }
 
 async fn handle_ohttp_relay(
     req: Request<Incoming>,
+    gateway_origin: &str,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Error> {
-    let fwd_req = into_forward_req(req)?;
+    let fwd_req = into_forward_req(req, gateway_origin)?;
     forward_request(fwd_req).await.map(|res| {
         let (parts, body) = res.into_parts();
         let boxed_body = BoxBody::new(body);
@@ -69,7 +81,10 @@ async fn handle_ohttp_relay(
 }
 
 /// Convert an incoming request into a request to forward to the target gateway server.
-fn into_forward_req(mut req: Request<Incoming>) -> Result<Request<Incoming>, Error> {
+fn into_forward_req(
+    mut req: Request<Incoming>,
+    gateway_origin: &str,
+) -> Result<Request<Incoming>, Error> {
     if req.method() != hyper::Method::POST {
         return Err(Error::MethodNotAllowed);
     }
@@ -85,8 +100,8 @@ fn into_forward_req(mut req: Request<Incoming>) -> Result<Request<Incoming>, Err
     }
 
     let uri_string = format!(
-        "https://{}{}",
-        PAYJO_IN,
+        "{}{}",
+        gateway_origin,
         req.uri().path_and_query().map(|x| x.as_str()).unwrap_or("/")
     );
     let uri = uri_string.parse().map_err(|_| Error::BadRequest("Invalid target uri".to_owned()))?;
