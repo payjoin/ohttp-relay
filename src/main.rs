@@ -16,6 +16,7 @@ use tokio::net::TcpListener;
 mod error;
 use crate::error::Error;
 
+const DEFAULT_PORT: u16 = 3000;
 const PAYJO_IN: &str = "payjo.in";
 static OHTTP_RELAY_HOST: Lazy<HeaderValue> =
     Lazy::new(|| HeaderValue::from_str("localhost").expect("Invalid HeaderValue"));
@@ -24,7 +25,13 @@ static EXPECTED_MEDIA_TYPE: Lazy<HeaderValue> =
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
+    let port: u16 =
+        std::env::var("PORT").map(|s| s.parse().expect("Invalid PORT")).unwrap_or(DEFAULT_PORT);
+    ohttp_relay(port).await
+}
+
+async fn ohttp_relay(port: u16) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
 
     let listener = TcpListener::bind(addr).await?;
 
@@ -34,7 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         tokio::task::spawn(async move {
             if let Err(err) =
-                http1::Builder::new().serve_connection(io, service_fn(ohttp_relay)).await
+                http1::Builder::new().serve_connection(io, service_fn(serve_ohttp_relay)).await
             {
                 println!("Error serving connection: {:?}", err);
             }
@@ -42,7 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 }
 
-async fn ohttp_relay(
+async fn serve_ohttp_relay(
     req: Request<Incoming>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
     let res = handle_ohttp_relay(req).await.unwrap_or_else(|e| e.to_response());
