@@ -60,7 +60,12 @@ async fn handle_ohttp_relay(
     req: Request<Incoming>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Error> {
     let fwd_req = into_forward_req(req)?;
-    forward_request(fwd_req).await.map(|res| Response::new(res.boxed()))
+    forward_request(fwd_req).await.map(|res| {
+        let (parts, body) = res.into_parts();
+        let boxed_body = BoxBody::new(body);
+        let res = Response::from_parts(parts, boxed_body);
+        res
+    })
 }
 
 /// Convert an incoming request into a request to forward to the target gateway server.
