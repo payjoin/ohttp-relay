@@ -11,6 +11,7 @@ pub(crate) enum Error {
     MethodNotAllowed,
     UnsupportedMediaType,
     BadRequest(String),
+    NotFound,
 }
 
 impl Error {
@@ -24,6 +25,7 @@ impl Error {
                 *res.status_mut() = StatusCode::BAD_REQUEST;
                 *res.body_mut() = full(e.to_string()).boxed();
             }
+            Self::NotFound => *res.status_mut() = StatusCode::NOT_FOUND,
         };
 
         res
@@ -37,6 +39,7 @@ impl std::fmt::Display for Error {
             Self::BadGateway => write!(f, "Bad gateway"),
             Self::MethodNotAllowed => write!(f, "Method not allowed"),
             Self::BadRequest(e) => write!(f, "Bad request: {}", e),
+            Self::NotFound => write!(f, "Not found"),
         }
     }
 }

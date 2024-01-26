@@ -19,6 +19,9 @@ use tokio_util::net::Listener;
 mod error;
 use crate::error::Error;
 
+#[cfg(feature = "bootstrap")]
+mod bootstrap;
+
 const DEFAULT_PORT: u16 = 3000;
 static OHTTP_RELAY_HOST: Lazy<HeaderValue> =
     Lazy::new(|| HeaderValue::from_str("localhost").expect("Invalid HeaderValue"));
@@ -85,6 +88,7 @@ where
                     io,
                     service_fn(move |req| serve_ohttp_relay(req, gateway_origin.clone())),
                 )
+                .with_upgrades()
                 .await
             {
                 println!("Error serving connection: {:?}", err);
@@ -99,8 +103,13 @@ async fn serve_ohttp_relay(
     req: Request<Incoming>,
     gateway_origin: Arc<String>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
-    let res =
-        handle_ohttp_relay(req, gateway_origin.as_str()).await.unwrap_or_else(|e| e.to_response());
+    let res = match req.uri().path() {
+        "/" => handle_ohttp_relay(req, gateway_origin.as_str()).await,
+        #[cfg(feature = "bootstrap")]
+        "/ohttp-keys" => bootstrap::handle_ohttp_keys(req, gateway_origin).await,
+        _ => Err(Error::NotFound),
+    }
+    .unwrap_or_else(|e| e.to_response());
     Ok(res)
 }
 
@@ -164,7 +173,7 @@ fn full<T: Into<Bytes>>(chunk: T) -> BoxBody<Bytes, hyper::Error> {
 #[cfg(test)]
 mod test {
     use hex::FromHex;
-    use tokio::net::UnixStream;
+    use tokio::net::{TcpStream, UnixStream};
 
     use super::*;
 
@@ -178,7 +187,7 @@ mod test {
         let gateway_port = find_free_port();
         let relay_port = find_free_port();
         tokio::select! {
-            _ = ohttp_gateway(gateway_port) => {
+            _ = example_gateway_http(gateway_port) => {
                 assert!(false, "Gateway is long running");
             }
             _ = ohttp_relay_tcp(relay_port, format!("http://localhost:{}", gateway_port)) => {
@@ -193,7 +202,6 @@ mod test {
         let temp_dir = std::env::temp_dir();
         let socket_path = temp_dir.as_path().join("test.socket");
 
-        // Clean up the socket file if it already exists
         if socket_path.exists() {
             std::fs::remove_file(&socket_path).expect("Failed to remove existing socket file");
         }
@@ -201,7 +209,7 @@ mod test {
         let gateway_port = find_free_port();
         let socket_path_str = socket_path.to_str().unwrap();
         tokio::select! {
-            _ = ohttp_gateway(gateway_port) => {
+            _ = example_gateway_http(gateway_port) => {
                 assert!(false, "Gateway is long running");
             }
             _ = ohttp_relay_socket(socket_path_str, format!("http://localhost:{}", gateway_port)) => {
@@ -211,27 +219,34 @@ mod test {
         }
     }
 
-    async fn ohttp_gateway(port: u16) -> Result<(), Box<dyn std::error::Error>> {
-        let addr = SocketAddr::from(([127, 0, 0, 1], port));
-
-        let listener = TcpListener::bind(addr).await?;
-        println!("Gateway listening on http://{}", addr);
-
-        loop {
-            let (stream, _) = listener.accept().await?;
-            let io = TokioIo::new(stream);
-
-            tokio::task::spawn(async move {
+    async fn example_gateway_http(port: u16) -> Result<(), Box<dyn std::error::Error>> {
+        example_gateway(port, |stream| {
+            tokio::spawn(async move {
+                let io = TokioIo::new(stream);
                 if let Err(err) =
                     http1::Builder::new().serve_connection(io, service_fn(handle_gateway)).await
                 {
                     println!("Failed to serve connection: {:?}", err);
                 }
             });
-        }
+        })
+        .await
     }
 
     async fn handle_gateway(
+        req: Request<Incoming>,
+    ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
+        let res = match req.uri().path() {
+            "/" => handle_ohttp_req(req).await,
+            #[cfg(feature = "bootstrap")]
+            "/ohttp-keys" => bootstrap::handle_ohttp_keys(req).await,
+            _ => panic!("Unexpected request"),
+        }
+        .unwrap();
+        Ok(res)
+    }
+
+    async fn handle_ohttp_req(
         _: Request<Incoming>,
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
         let mut res = Response::new(full(Vec::from_hex(ENCAPSULATED_RES).unwrap()).boxed());
@@ -281,8 +296,142 @@ mod test {
         assert_eq!(res.headers().get(CONTENT_LENGTH), Some(&HeaderValue::from_static("35")));
     }
 
+    async fn example_gateway<F>(port: u16, handle_conn: F) -> Result<(), Box<dyn std::error::Error>>
+    where
+        F: Fn(TcpStream) + Clone + Send + Sync + 'static,
+    {
+        let addr = SocketAddr::from(([127, 0, 0, 1], port));
+        let listener = TcpListener::bind(addr).await?;
+        println!("Gateway listening on port {}", port);
+
+        loop {
+            let (stream, _) = listener.accept().await?;
+            let handle_conn = handle_conn.clone();
+
+            tokio::task::spawn(async move {
+                handle_conn(stream);
+            });
+        }
+    }
+
     fn find_free_port() -> u16 {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.local_addr().unwrap().port()
+    }
+
+    #[cfg(feature = "bootstrap")]
+    mod bootstrap {
+        use std::io::Write;
+
+        use rustls::pki_types::{self, CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+        use rustls::ServerConfig;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio_rustls::{TlsAcceptor, TlsConnector};
+        use tokio_tungstenite::connect_async;
+
+        use super::*;
+        use crate::bootstrap::WsIo;
+
+        const OHTTP_KEYS: &str = "01002031e1f05a740102115220e9af918f738674aec95f54db6e04eb705aae8e79815500080001000100010003";
+
+        #[tokio::test]
+        async fn test_bootstrap() {
+            let gateway_port = find_free_port();
+            let relay_port = find_free_port();
+            let (key, cert) = gen_localhost_cert();
+            let cert_clone = cert.clone();
+            tokio::select! {
+                _ = example_gateway_https(gateway_port, (key, cert)) => {
+                    assert!(false, "Gateway is long running");
+                }
+                _ = ohttp_relay_tcp(relay_port, format!("http://localhost:{}", gateway_port)) => {
+                    assert!(false, "Relay is long running");
+                }
+                _ = ohttp_keys_ws_client(relay_port, cert_clone) => {}
+            }
+        }
+
+        async fn example_gateway_https(
+            port: u16,
+            cert_pair: (PrivateKeyDer<'static>, CertificateDer<'static>),
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let acceptor = Arc::new(build_tls_acceptor(cert_pair));
+
+            example_gateway(port, move |stream| {
+                let acceptor = acceptor.clone();
+                tokio::spawn(async move {
+                    let stream = acceptor.accept(stream).await.expect("TLS error");
+                    let io = TokioIo::new(stream);
+                    if let Err(err) =
+                        http1::Builder::new().serve_connection(io, service_fn(handle_gateway)).await
+                    {
+                        println!("Failed to serve connection: {:?}", err);
+                    }
+                });
+            })
+            .await
+        }
+
+        pub(crate) async fn handle_ohttp_keys(
+            _: Request<Incoming>,
+        ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
+            let mut res = Response::new(full(Vec::from_hex(OHTTP_KEYS).unwrap()).boxed());
+            *res.status_mut() = hyper::StatusCode::OK;
+            res.headers_mut()
+                .insert(CONTENT_TYPE, HeaderValue::from_static("application/ohttp-keys"));
+            res.headers_mut().insert(CONTENT_LENGTH, HeaderValue::from_static("45"));
+            Ok(res)
+        }
+
+        async fn ohttp_keys_ws_client(relay_port: u16, cert: CertificateDer<'_>) {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+            let mut root_store = rustls::RootCertStore::empty();
+            root_store.add(cert).unwrap();
+            let config = tokio_rustls::rustls::ClientConfig::builder()
+                .with_root_certificates(root_store)
+                .with_no_client_auth();
+
+            let (ws_stream, _res) =
+                connect_async(format!("ws://localhost:{}/ohttp-keys", relay_port))
+                    .await
+                    .expect("Failed to connect");
+            println!("Connected to ws");
+            let ws_io = WsIo::new(ws_stream);
+            let connector = TlsConnector::from(Arc::new(config));
+            let domain = pki_types::ServerName::try_from("localhost")
+                .map_err(|_| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid dnsname")
+                })
+                .unwrap()
+                .to_owned();
+            let mut tls_stream = connector.connect(domain, ws_io).await.unwrap();
+
+            let content =
+                b"GET /ohttp-keys HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+            tls_stream.write_all(content).await.unwrap();
+            tls_stream.flush().await.unwrap();
+            let mut plaintext = Vec::new();
+            let _ = tls_stream.read_to_end(&mut plaintext).await.unwrap();
+            std::io::stdout().write_all(&plaintext).unwrap();
+        }
+
+        fn build_tls_acceptor(
+            cert_pair: (PrivateKeyDer<'static>, CertificateDer<'static>),
+        ) -> TlsAcceptor {
+            let server_config = ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(vec![cert_pair.1], cert_pair.0)
+                .unwrap();
+            tokio_rustls::TlsAcceptor::from(Arc::new(server_config))
+        }
+
+        fn gen_localhost_cert() -> (PrivateKeyDer<'static>, CertificateDer<'static>) {
+            let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+            let key =
+                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(cert.serialize_private_key_der()));
+            let cert = CertificateDer::from(cert.serialize_der().unwrap());
+            (key, cert)
+        }
     }
 }
