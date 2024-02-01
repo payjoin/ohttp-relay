@@ -75,8 +75,7 @@ async fn handle_ohttp_relay(
     forward_request(fwd_req).await.map(|res| {
         let (parts, body) = res.into_parts();
         let boxed_body = BoxBody::new(body);
-        let res = Response::from_parts(parts, boxed_body);
-        res
+        Response::from_parts(parts, boxed_body)
     })
 }
 
