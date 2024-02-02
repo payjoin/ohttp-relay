@@ -14,4 +14,6 @@ Run ohttp-relay by setting `PORT` and `GATEWAY_ORIGIN` environment vaiables. For
 PORT=3000 GATEWAY_ORIGIN='https://payjo.in' cargo run
 ```
 
+Alternatively, set `UNIX_SOCKET` to bind to a unix socket path instead of a TCP port.
+
 This crate is intended to be run behind a reverse proxy like NGINX that can handle TLS for you.

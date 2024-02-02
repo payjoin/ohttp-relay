@@ -12,7 +12,9 @@ use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use once_cell::sync::Lazy;
-use tokio::net::TcpListener;
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::{TcpListener, UnixListener};
+use tokio_util::net::Listener;
 
 mod error;
 use crate::error::Error;
@@ -25,26 +27,59 @@ static EXPECTED_MEDIA_TYPE: Lazy<HeaderValue> =
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let port: u16 =
-        std::env::var("PORT").map(|s| s.parse().expect("Invalid PORT")).unwrap_or(DEFAULT_PORT);
+    let port_env = std::env::var("PORT");
+    let unix_socket_env = std::env::var("UNIX_SOCKET");
     let gateway_origin = std::env::var("GATEWAY_ORIGIN").expect("GATEWAY_ORIGIN is required");
-    ohttp_relay(port, gateway_origin).await
+
+    match (port_env, unix_socket_env) {
+        (Ok(_), Ok(_)) => panic!(
+            "Both PORT and UNIX_SOCKET environment variables are set. Please specify only one."
+        ),
+        (Err(_), Ok(unix_socket_path)) =>
+            ohttp_relay_socket(&unix_socket_path, gateway_origin).await?,
+        (Ok(port_str), Err(_)) => {
+            let port: u16 = port_str.parse().expect("Invalid PORT");
+            ohttp_relay_tcp(port, gateway_origin).await?
+        }
+        (Err(_), Err(_)) => ohttp_relay_tcp(DEFAULT_PORT, gateway_origin).await?,
+    }
+
+    Ok(())
 }
 
-async fn ohttp_relay(
+async fn ohttp_relay_tcp(
     port: u16,
     gateway_origin: String,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
-
     let listener = TcpListener::bind(addr).await?;
-    println!("OHTTP relay listening on http://{}", addr);
+    println!("OHTTP relay listening on tcp://{}", addr);
+    ohttp_relay(listener, gateway_origin).await
+}
+
+async fn ohttp_relay_socket(
+    socket_path: &str,
+    gateway_origin: String,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let listener = UnixListener::bind(socket_path)?;
+    println!("OHTTP relay listening on socket: {}", socket_path);
+    ohttp_relay(listener, gateway_origin).await
+}
+
+async fn ohttp_relay<L>(
+    mut listener: L,
+    gateway_origin: String,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+where
+    L: Listener + Unpin,
+    L::Io: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let gateway_origin = Arc::new(gateway_origin);
-    loop {
-        let (stream, _) = listener.accept().await?;
-        let io = TokioIo::new(stream);
+
+    while let Ok((stream, _)) = listener.accept().await {
         let gateway_origin = gateway_origin.clone();
-        tokio::task::spawn(async move {
+        let io = TokioIo::new(stream);
+        tokio::spawn(async move {
             if let Err(err) = http1::Builder::new()
                 .serve_connection(
                     io,
@@ -56,6 +91,8 @@ async fn ohttp_relay(
             }
         });
     }
+
+    Ok(())
 }
 
 async fn serve_ohttp_relay(
@@ -127,6 +164,7 @@ fn full<T: Into<Bytes>>(chunk: T) -> BoxBody<Bytes, hyper::Error> {
 #[cfg(test)]
 mod test {
     use hex::FromHex;
+    use tokio::net::UnixStream;
 
     use super::*;
 
@@ -143,10 +181,33 @@ mod test {
             _ = ohttp_gateway(gateway_port) => {
                 assert!(false, "Gateway is long running");
             }
-            _ = ohttp_relay(relay_port, format!("http://localhost:{}", gateway_port)) => {
+            _ = ohttp_relay_tcp(relay_port, format!("http://localhost:{}", gateway_port)) => {
                 assert!(false, "Relay is long running");
             }
-            _ = ohttp_client(relay_port) => {}
+            _ = ohttp_req_over_tcp(relay_port) => {}
+        }
+    }
+
+    #[tokio::test]
+    async fn test_request_response_socket() {
+        let temp_dir = std::env::temp_dir();
+        let socket_path = temp_dir.as_path().join("test.socket");
+
+        // Clean up the socket file if it already exists
+        if socket_path.exists() {
+            std::fs::remove_file(&socket_path).expect("Failed to remove existing socket file");
+        }
+
+        let gateway_port = find_free_port();
+        let socket_path_str = socket_path.to_str().unwrap();
+        tokio::select! {
+            _ = ohttp_gateway(gateway_port) => {
+                assert!(false, "Gateway is long running");
+            }
+            _ = ohttp_relay_socket(socket_path_str, format!("http://localhost:{}", gateway_port)) => {
+                assert!(false, "Relay is long running");
+            }
+            _ = ohttp_req_over_unix_socket(socket_path_str) => {}
         }
     }
 
@@ -180,7 +241,7 @@ mod test {
         Ok(res)
     }
 
-    async fn ohttp_client(relay_port: u16) -> () {
+    async fn ohttp_req_over_tcp(relay_port: u16) -> () {
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         let mut req = Request::new(full(Vec::from_hex(ENCAPSULATED_REQ).unwrap()).boxed());
         *req.method_mut() = hyper::Method::POST;
@@ -191,6 +252,27 @@ mod test {
             HttpsConnectorBuilder::new().with_webpki_roots().https_or_http().enable_http1().build();
         let client = Client::builder(TokioExecutor::new()).build(https);
         let res = client.request(req).await.unwrap();
+        assert_eq!(res.status(), hyper::StatusCode::OK);
+        assert_eq!(
+            res.headers().get(CONTENT_TYPE),
+            Some(&HeaderValue::from_static("message/ohttp-res"))
+        );
+        assert_eq!(res.headers().get(CONTENT_LENGTH), Some(&HeaderValue::from_static("35")));
+    }
+
+    async fn ohttp_req_over_unix_socket(socket_path: &str) -> () {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let stream = TokioIo::new(UnixStream::connect(socket_path).await.unwrap());
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(stream).await.unwrap();
+        tokio::task::spawn(async move {
+            conn.await.unwrap();
+        });
+        let mut req = Request::new(full(Vec::from_hex(ENCAPSULATED_REQ).unwrap()).boxed());
+        *req.method_mut() = hyper::Method::POST;
+        *req.uri_mut() = format!("http://unix-socket-ignores-this.com").parse().unwrap();
+        req.headers_mut().insert(CONTENT_TYPE, HeaderValue::from_static("message/ohttp-req"));
+        req.headers_mut().insert(CONTENT_LENGTH, HeaderValue::from_static("78"));
+        let res = sender.send_request(req).await.unwrap();
         assert_eq!(res.status(), hyper::StatusCode::OK);
         assert_eq!(
             res.headers().get(CONTENT_TYPE),
