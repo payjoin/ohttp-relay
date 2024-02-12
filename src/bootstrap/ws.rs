@@ -1,42 +1,15 @@
 use std::io;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures::{Sink, SinkExt, StreamExt};
-use http_body_util::combinators::BoxBody;
-use http_body_util::BodyExt;
-use hyper::body::{Bytes, Incoming};
-use hyper::{Request, Response};
 use hyper_tungstenite::HyperWebsocket;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_tungstenite::{tungstenite, WebSocketStream};
 
-use crate::error::Error;
-
-pub async fn handle_ohttp_keys(
-    mut req: Request<Incoming>,
-    gateway_origin: Arc<String>,
-) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Error> {
-    if hyper_tungstenite::is_upgrade_request(&req) {
-        let (res, websocket) = hyper_tungstenite::upgrade(&mut req, None)
-            .map_err(|e| Error::BadRequest(format!("Error upgrading to websocket: {}", e)))?;
-        tokio::spawn(async move {
-            if let Err(e) = serve_websocket(websocket, gateway_origin.as_str()).await {
-                eprintln!("Error in websocket connection: {e}");
-            }
-        });
-        let (parts, body) = res.into_parts();
-        let boxbody = body.map_err(|never| match never {}).boxed();
-        Ok(Response::from_parts(parts, boxbody))
-    } else {
-        Err(Error::BadRequest("Not a websocket upgrade request".to_string()))
-    }
-}
-
 /// Stream WebSocket frames from the client to the gateway server's TCP socket and vice versa.
-async fn serve_websocket(
+pub async fn serve_websocket(
     websocket: HyperWebsocket,
     gateway_origin: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {

@@ -330,7 +330,7 @@ mod test {
         use tokio_tungstenite::connect_async;
 
         use super::*;
-        use crate::bootstrap::WsIo;
+        use crate::bootstrap::ws::WsIo;
 
         const OHTTP_KEYS: &str = "01002031e1f05a740102115220e9af918f738674aec95f54db6e04eb705aae8e79815500080001000100010003";
 
