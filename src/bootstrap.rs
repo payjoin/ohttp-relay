@@ -1,3 +1,4 @@
+use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -19,9 +20,8 @@ pub async fn handle_ohttp_keys(
     gateway_origin: Arc<String>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Error> {
     if hyper_tungstenite::is_upgrade_request(&req) {
-        let (res, websocket) = hyper_tungstenite::upgrade(&mut req, None).map_err(|e| {
-            Error::BadRequest(format!("Error upgrading to websocket: {}", e))
-        })?;
+        let (res, websocket) = hyper_tungstenite::upgrade(&mut req, None)
+            .map_err(|e| Error::BadRequest(format!("Error upgrading to websocket: {}", e)))?;
         tokio::spawn(async move {
             if let Err(e) = serve_websocket(websocket, gateway_origin.as_str()).await {
                 eprintln!("Error in websocket connection: {e}");
@@ -72,7 +72,7 @@ where
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
-    ) -> Poll<std::io::Result<()>> {
+    ) -> Poll<io::Result<()>> {
         let self_mut = self.get_mut();
 
         // If the read buffer has data, use it first.
@@ -129,7 +129,7 @@ where
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         data: &[u8],
-    ) -> Poll<Result<usize, std::io::Error>> {
+    ) -> Poll<Result<usize, io::Error>> {
         let self_mut = self.get_mut();
         match Pin::new(&mut self_mut.ws_stream).poll_ready(cx) {
             Poll::Ready(Ok(())) =>
@@ -140,14 +140,11 @@ where
         }
     }
 
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
         Pin::new(&mut self.get_mut().ws_stream).poll_flush(cx).map_err(map_ws_error)
     }
 
-    fn poll_shutdown(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), std::io::Error>> {
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
         Pin::new(&mut self.get_mut().ws_stream).poll_close(cx).map_err(map_ws_error)
     }
 }
@@ -155,10 +152,10 @@ where
 fn start_send(
     ws_stream: &mut WebSocketStream<impl AsyncRead + AsyncWrite + Unpin>,
     data: Message,
-) -> Poll<Result<(), std::io::Error>> {
+) -> Poll<Result<(), io::Error>> {
     Poll::Ready(ws_stream.start_send_unpin(data).map_err(map_ws_error))
 }
 
-fn map_ws_error(e: tungstenite::Error) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::BrokenPipe, format!("Tungstenite error: {}", e))
+fn map_ws_error(e: tungstenite::Error) -> io::Error {
+    io::Error::new(io::ErrorKind::BrokenPipe, format!("Tungstenite error: {}", e))
 }
