@@ -17,3 +17,11 @@ PORT=3000 GATEWAY_ORIGIN='https://payjo.in' cargo run
 Alternatively, set `UNIX_SOCKET` to bind to a unix socket path instead of a TCP port.
 
 This crate is intended to be run behind a reverse proxy like NGINX that can handle TLS for you.
+
+## Bootstrap Feature
+
+The Oblivious HTTP specification requires clients obtain a [Key Configuration](https://www.ietf.org/rfc/rfc9458.html#name-key-configuration) from the OHTTP Gateway but leaves a mechanism for doing so explicitly unspecified. This feature hosts an HTTPS-in-WebSocket proxy to allow web clients to GET a gateway's ohttp-keys via [Direct Discovery](https://datatracker.ietf.org/doc/html/draft-ietf-privacypass-key-consistency-01#name-direct-discovery) in an end-to-end-encrypted, authenticated manner using the OHTTP relay as a tunnel so as not to reveal their IP address. The `bootstrap` feature to host this WebSocket server is enabled by default.
+
+### How does it work?
+
+The WebSocket server forwards packets directly to and from the OHTTP Gateway's TCP socket to negotiate a TLS session between the client and gateway. BY doing so, the OHTTP Relay is prevented from conducting a [man-in-the-middle attack](https://en.wikipedia.org/wiki/Man-in-the-middle_attack) to compromise the TLS session.
