@@ -1,0 +1,30 @@
+name: Test and Build
+
+on: [push, pull_request]
+
+jobs:
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rust:
+          - 1.63.0 # MSRV
+          - stable
+          - nightly
+
+    steps:
+      - uses: actions/checkout@v2
+      - uses: Swatinem/rust-cache@v1.2.0
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ matrix.rust }}
+          override: true
+      - name: Fixes for MSRV
+        if: matrix.rust == '1.63.0'
+        run: |
+          cargo update
+          cargo update -p time@0.3.34 --precise 0.3.20
+      - name: test ohttp-relay
+        run: cargo test --verbose --all-features
