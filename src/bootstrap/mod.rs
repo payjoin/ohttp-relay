@@ -9,7 +9,7 @@ use crate::error::Error;
 
 pub mod ws;
 
-pub async fn handle_ohttp_keys(
+pub(crate) async fn handle_ohttp_keys(
     mut req: Request<Incoming>,
     gateway_origin: Arc<String>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Error> {
