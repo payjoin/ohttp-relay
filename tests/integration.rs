@@ -2,13 +2,18 @@ mod integration {
     use std::net::SocketAddr;
 
     use hex::FromHex;
-    use http_body_util::{combinators::BoxBody, BodyExt, Full};
-    use hyper::{body::{Bytes, Incoming}, header::{HeaderValue, CONTENT_LENGTH, CONTENT_TYPE}, server::conn::http1, service::service_fn, Request, Response};
+    use http_body_util::combinators::BoxBody;
+    use http_body_util::{BodyExt, Full};
+    use hyper::body::{Bytes, Incoming};
+    use hyper::header::{HeaderValue, CONTENT_LENGTH, CONTENT_TYPE};
+    use hyper::server::conn::http1;
+    use hyper::service::service_fn;
+    use hyper::{Request, Response};
     use hyper_rustls::HttpsConnectorBuilder;
-    use hyper_util::{client::legacy::Client, rt::{TokioExecutor, TokioIo}};
-    use tokio::net::{TcpListener, TcpStream, UnixStream};
-
+    use hyper_util::client::legacy::Client;
+    use hyper_util::rt::{TokioExecutor, TokioIo};
     use ohttp_relay::*;
+    use tokio::net::{TcpListener, TcpStream, UnixStream};
 
     const ENCAPSULATED_REQ: &str = "010020000100014b28f881333e7c164ffc499ad9796f877f4e1051ee6d31bad19dec96c208b4726374e469135906992e1268c594d2a10c695d858c40a026e7965e7d86b83dd440b2c0185204b4d63525";
     const ENCAPSULATED_RES: &str =
@@ -157,6 +162,7 @@ mod integration {
         use std::io::Write;
         use std::sync::Arc;
 
+        use ohttp_relay::bootstrap::ws::WsIo;
         use rustls::pki_types::{self, CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
         use rustls::ServerConfig;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -164,7 +170,6 @@ mod integration {
         use tokio_tungstenite::connect_async;
 
         use super::*;
-        use ohttp_relay::bootstrap::ws::WsIo;
 
         const OHTTP_KEYS: &str = "01002031e1f05a740102115220e9af918f738674aec95f54db6e04eb705aae8e79815500080001000100010003";
 
