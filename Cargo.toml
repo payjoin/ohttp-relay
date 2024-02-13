@@ -15,7 +15,8 @@ exclude = ["tests"]
 
 [features]
 default = ["bootstrap"]
-bootstrap = ["futures", "hyper-tungstenite", "rustls", "tokio-tungstenite"]
+bootstrap = ["ws-bootstrap"]
+ws-bootstrap = ["futures", "hyper-tungstenite", "rustls", "tokio-tungstenite"]
 
 [dependencies]
 futures = { version = "0.3", optional = true }

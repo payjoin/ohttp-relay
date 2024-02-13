@@ -1,15 +1,37 @@
 use std::io;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures::{Sink, SinkExt, StreamExt};
+use http_body_util::Full;
+use hyper::body::{Bytes, Incoming};
+use hyper::{Request, Response};
 use hyper_tungstenite::HyperWebsocket;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio_tungstenite::tungstenite::error::ProtocolError;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_tungstenite::{tungstenite, WebSocketStream};
 
+pub fn is_upgrade_request(req: &Request<Incoming>) -> bool {
+    hyper_tungstenite::is_upgrade_request(req)
+}
+
+pub async fn upgrade(
+    req: &mut Request<Incoming>,
+    gateway_origin: Arc<String>,
+) -> Result<Response<Full<Bytes>>, ProtocolError> {
+    let (res, websocket) = hyper_tungstenite::upgrade(req, None)?;
+    tokio::spawn(async move {
+        if let Err(e) = serve_websocket(websocket, gateway_origin.as_str()).await {
+            eprintln!("Error in websocket connection: {e}");
+        }
+    });
+    Ok(res)
+}
+
 /// Stream WebSocket frames from the client to the gateway server's TCP socket and vice versa.
-pub async fn serve_websocket(
+async fn serve_websocket(
     websocket: HyperWebsocket,
     gateway_origin: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {

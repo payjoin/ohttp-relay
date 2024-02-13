@@ -19,7 +19,7 @@ use tokio_util::net::Listener;
 pub mod error;
 use crate::error::Error;
 
-#[cfg(feature = "bootstrap")]
+#[cfg(feature = "ws-bootstrap")]
 pub mod bootstrap;
 
 pub const DEFAULT_PORT: u16 = 3000;
@@ -128,7 +128,6 @@ fn into_forward_req(
         req.uri().path_and_query().map(|x| x.as_str()).unwrap_or("/")
     );
     let uri = uri_string.parse().map_err(|_| Error::BadRequest("Invalid target uri".to_owned()))?;
-    println!("uri: {:?}", uri);
     *req.uri_mut() = uri;
     Ok(req)
 }
