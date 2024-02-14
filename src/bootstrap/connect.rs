@@ -7,7 +7,8 @@ use hyper::{Method, Request, Response};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpStream;
 
-use crate::{empty, error::Error};
+use crate::empty;
+use crate::error::Error;
 
 pub(crate) fn is_connect_request(req: &Request<Incoming>) -> bool {
     Method::CONNECT == req.method()
@@ -40,7 +41,6 @@ pub(crate) async fn try_upgrade(
 async fn tunnel(upgraded: Upgraded, addr: String) -> std::io::Result<()> {
     let mut server = TcpStream::connect(addr).await?;
     let mut upgraded = TokioIo::new(upgraded);
-
     let (_, _) = tokio::io::copy_bidirectional(&mut upgraded, &mut server).await?;
     Ok(())
 }

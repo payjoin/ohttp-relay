@@ -1,3 +1,4 @@
+#[cfg(test)]
 mod integration {
     use std::net::SocketAddr;
 
