@@ -13,7 +13,7 @@ use tokio_tungstenite::tungstenite::error::ProtocolError;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_tungstenite::{tungstenite, WebSocketStream};
 
-pub fn is_upgrade_request(req: &Request<Incoming>) -> bool {
+pub fn is_websocket_request(req: &Request<Incoming>) -> bool {
     hyper_tungstenite::is_upgrade_request(req)
 }
 

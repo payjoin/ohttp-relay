@@ -15,7 +15,8 @@ exclude = ["tests"]
 
 [features]
 default = ["bootstrap"]
-bootstrap = ["ws-bootstrap"]
+bootstrap = ["connect-bootstrap", "ws-bootstrap"]
+connect-bootstrap = []
 ws-bootstrap = ["futures", "hyper-tungstenite", "rustls", "tokio-tungstenite"]
 
 [dependencies]
@@ -35,3 +36,4 @@ tokio-util = { version = "0.7", features = ["net", "codec"] }
 hex = { package = "hex-conservative", version = "0.1.1" }
 rcgen = { version = "0.12", default-features = false, features = ["ring"] }
 tokio-rustls = "0.25"
+ureq = "2"
