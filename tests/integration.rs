@@ -1,3 +1,4 @@
+#[cfg(test)]
 mod integration {
     use std::net::SocketAddr;
 
@@ -76,7 +77,7 @@ mod integration {
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
         let res = match req.uri().path() {
             "/" => handle_ohttp_req(req).await,
-            #[cfg(feature = "bootstrap")]
+            #[cfg(any(feature = "connect-bootstrap", feature = "ws-bootstrap"))]
             "/ohttp-keys" => bootstrap::handle_ohttp_keys(req).await,
             _ => panic!("Unexpected request"),
         }
@@ -157,24 +158,117 @@ mod integration {
         listener.local_addr().unwrap().port()
     }
 
-    #[cfg(feature = "bootstrap")]
+    #[cfg(any(feature = "connect-bootstrap", feature = "ws-bootstrap"))]
     mod bootstrap {
+        use std::future::Future;
         use std::io::Write;
+        use std::pin::Pin;
         use std::sync::Arc;
 
-        use ohttp_relay::bootstrap::ws::WsIo;
         use rustls::pki_types::{self, CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
         use rustls::ServerConfig;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio_rustls::{TlsAcceptor, TlsConnector};
-        use tokio_tungstenite::connect_async;
 
         use super::*;
 
         const OHTTP_KEYS: &str = "01002031e1f05a740102115220e9af918f738674aec95f54db6e04eb705aae8e79815500080001000100010003";
 
-        #[tokio::test]
-        async fn test_bootstrap() {
+        #[cfg(feature = "ws-bootstrap")]
+        mod ws_bootstrap {
+            use tokio_tungstenite::connect_async;
+
+            use super::*;
+
+            #[tokio::test]
+            async fn test_ws_bootstrap() {
+                test_bootstrap(|relay_port, _, cert| {
+                    Box::pin(ohttp_keys_ws_client(relay_port, cert))
+                })
+                .await;
+            }
+
+            async fn ohttp_keys_ws_client(relay_port: u16, cert: CertificateDer<'_>) {
+                use ohttp_relay::bootstrap::ws::WsIo;
+
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+                let mut root_store = rustls::RootCertStore::empty();
+                root_store.add(cert).unwrap();
+                let config = tokio_rustls::rustls::ClientConfig::builder()
+                    .with_root_certificates(root_store)
+                    .with_no_client_auth();
+
+                let (ws_stream, _res) = connect_async(format!("ws://localhost:{}", relay_port))
+                    .await
+                    .expect("Failed to connect");
+                println!("Connected to ws");
+                let ws_io = WsIo::new(ws_stream);
+                let connector = TlsConnector::from(Arc::new(config));
+                let domain = pki_types::ServerName::try_from("localhost")
+                    .map_err(|_| {
+                        std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid dnsname")
+                    })
+                    .unwrap()
+                    .to_owned();
+                let mut tls_stream = connector.connect(domain, ws_io).await.unwrap();
+
+                let content =
+                    b"GET /ohttp-keys HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+                tls_stream.write_all(content).await.unwrap();
+                tls_stream.flush().await.unwrap();
+                let mut plaintext = Vec::new();
+                let _ = tls_stream.read_to_end(&mut plaintext).await.unwrap();
+                std::io::stdout().write_all(&plaintext).unwrap();
+            }
+        }
+
+        #[cfg(feature = "connect-bootstrap")]
+        mod connect_bootstrap {
+            use super::*;
+
+            #[tokio::test]
+            async fn test_connect_bootstrap() {
+                test_bootstrap(|relay_port, gateway_port, cert| {
+                    Box::pin(ohttp_keys_connect_client(relay_port, gateway_port, cert))
+                })
+                .await;
+            }
+
+            async fn ohttp_keys_connect_client(
+                relay_port: u16,
+                gateway_port: u16,
+                cert: CertificateDer<'_>,
+            ) {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+                let mut root_store = rustls::RootCertStore::empty();
+                root_store.add(cert).unwrap();
+                let config = tokio_rustls::rustls::ClientConfig::builder()
+                    .with_root_certificates(root_store)
+                    .with_no_client_auth();
+                let proxy =
+                    ureq::Proxy::new(format!("http://localhost:{}", relay_port).as_str()).unwrap();
+                let https =
+                    ureq::AgentBuilder::new().tls_config(Arc::new(config)).proxy(proxy).build();
+                let res = tokio::task::spawn_blocking(move || {
+                    https
+                        .get(format!("https://localhost:{}/ohttp-keys", gateway_port).as_str())
+                        .call()
+                        .unwrap()
+                })
+                .await
+                .unwrap();
+                assert_eq!(res.status(), 200);
+                assert_eq!(res.header("content-type").unwrap(), "application/ohttp-keys");
+                assert_eq!(res.header("content-length").unwrap(), "45");
+            }
+        }
+
+        async fn test_bootstrap<F>(client_fn: F)
+        where
+            F: FnOnce(u16, u16, CertificateDer<'static>) -> Pin<Box<dyn Future<Output = ()>>>,
+        {
             let gateway_port = find_free_port();
             let relay_port = find_free_port();
             let (key, cert) = gen_localhost_cert();
@@ -186,7 +280,7 @@ mod integration {
                 _ = listen_tcp(relay_port, format!("http://localhost:{}", gateway_port)) => {
                     assert!(false, "Relay is long running");
                 }
-                _ = ohttp_keys_ws_client(relay_port, cert_clone) => {}
+                _ = client_fn(relay_port, gateway_port, cert_clone) => {}
             }
         }
 
@@ -220,39 +314,6 @@ mod integration {
                 .insert(CONTENT_TYPE, HeaderValue::from_static("application/ohttp-keys"));
             res.headers_mut().insert(CONTENT_LENGTH, HeaderValue::from_static("45"));
             Ok(res)
-        }
-
-        async fn ohttp_keys_ws_client(relay_port: u16, cert: CertificateDer<'_>) {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-
-            let mut root_store = rustls::RootCertStore::empty();
-            root_store.add(cert).unwrap();
-            let config = tokio_rustls::rustls::ClientConfig::builder()
-                .with_root_certificates(root_store)
-                .with_no_client_auth();
-
-            let (ws_stream, _res) =
-                connect_async(format!("ws://localhost:{}/ohttp-keys", relay_port))
-                    .await
-                    .expect("Failed to connect");
-            println!("Connected to ws");
-            let ws_io = WsIo::new(ws_stream);
-            let connector = TlsConnector::from(Arc::new(config));
-            let domain = pki_types::ServerName::try_from("localhost")
-                .map_err(|_| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid dnsname")
-                })
-                .unwrap()
-                .to_owned();
-            let mut tls_stream = connector.connect(domain, ws_io).await.unwrap();
-
-            let content =
-                b"GET /ohttp-keys HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-            tls_stream.write_all(content).await.unwrap();
-            tls_stream.flush().await.unwrap();
-            let mut plaintext = Vec::new();
-            let _ = tls_stream.read_to_end(&mut plaintext).await.unwrap();
-            std::io::stdout().write_all(&plaintext).unwrap();
         }
 
         fn build_tls_acceptor(

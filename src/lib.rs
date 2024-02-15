@@ -7,7 +7,7 @@ use hyper::body::{Bytes, Incoming};
 use hyper::header::{HeaderValue, CONTENT_LENGTH, CONTENT_TYPE, HOST};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
-use hyper::{Request, Response};
+use hyper::{Method, Request, Response};
 use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -19,7 +19,7 @@ use tokio_util::net::Listener;
 pub mod error;
 use crate::error::Error;
 
-#[cfg(feature = "bootstrap")]
+#[cfg(any(feature = "connect-bootstrap", feature = "ws-bootstrap"))]
 pub mod bootstrap;
 
 pub const DEFAULT_PORT: u16 = 3000;
@@ -81,10 +81,12 @@ async fn serve_ohttp_relay(
     req: Request<Incoming>,
     gateway_origin: Arc<String>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
-    let res = match req.uri().path() {
-        "/" => handle_ohttp_relay(req, gateway_origin.as_str()).await,
-        #[cfg(feature = "bootstrap")]
-        "/ohttp-keys" => crate::bootstrap::handle_ohttp_keys(req, gateway_origin).await,
+    println!("req: {:?}", req);
+    let res = match req.method() {
+        &Method::POST => handle_ohttp_relay(req, gateway_origin.as_str()).await,
+        #[cfg(any(feature = "connect-bootstrap", feature = "ws-bootstrap"))]
+        &Method::CONNECT | &Method::GET =>
+            crate::bootstrap::handle_ohttp_keys(req, gateway_origin).await,
         _ => Err(Error::NotFound),
     }
     .unwrap_or_else(|e| e.to_response());
@@ -128,7 +130,6 @@ fn into_forward_req(
         req.uri().path_and_query().map(|x| x.as_str()).unwrap_or("/")
     );
     let uri = uri_string.parse().map_err(|_| Error::BadRequest("Invalid target uri".to_owned()))?;
-    println!("uri: {:?}", uri);
     *req.uri_mut() = uri;
     Ok(req)
 }
