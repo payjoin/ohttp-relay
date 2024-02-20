@@ -542,6 +542,7 @@ version = "0.0.1"
 dependencies = [
  "futures",
  "hex-conservative",
+ "http",
  "http-body-util",
  "hyper",
  "hyper-rustls",

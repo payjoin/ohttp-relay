@@ -12,6 +12,8 @@ pub(crate) enum Error {
     UnsupportedMediaType,
     BadRequest(String),
     NotFound,
+    #[allow(clippy::enum_variant_names)]
+    InternalServerError,
 }
 
 impl Error {
@@ -26,6 +28,7 @@ impl Error {
                 *res.body_mut() = full(e.to_string()).boxed();
             }
             Self::NotFound => *res.status_mut() = StatusCode::NOT_FOUND,
+            Self::InternalServerError => *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR,
         };
 
         res
@@ -40,6 +43,7 @@ impl std::fmt::Display for Error {
             Self::MethodNotAllowed => write!(f, "Method not allowed"),
             Self::BadRequest(e) => write!(f, "Bad request: {}", e),
             Self::NotFound => write!(f, "Not found"),
+            Self::InternalServerError => write!(f, "Internal server error"),
         }
     }
 }
