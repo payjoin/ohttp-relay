@@ -1,10 +1,14 @@
+use std::str::FromStr;
+
+use http::Uri;
 use ohttp_relay::DEFAULT_PORT;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let port_env = std::env::var("PORT");
     let unix_socket_env = std::env::var("UNIX_SOCKET");
-    let gateway_origin = std::env::var("GATEWAY_ORIGIN").expect("GATEWAY_ORIGIN is required");
+    let gateway_origin_str = std::env::var("GATEWAY_ORIGIN").expect("GATEWAY_ORIGIN is required");
+    let gateway_origin = Uri::from_str(&gateway_origin_str).expect("Invalid GATEWAY_ORIGIN URI");
 
     match (port_env, unix_socket_env) {
         (Ok(_), Ok(_)) => panic!(

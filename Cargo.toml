@@ -21,6 +21,7 @@ ws-bootstrap = ["futures", "hyper-tungstenite", "rustls", "tokio-tungstenite"]
 
 [dependencies]
 futures = { version = "0.3", optional = true }
+http = "1"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-rustls = { version = "0.26", features = ["webpki-roots"] }

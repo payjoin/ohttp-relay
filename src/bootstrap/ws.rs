@@ -1,9 +1,11 @@
 use std::io;
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures::{Sink, SinkExt, StreamExt};
+use http::Uri;
 use http_body_util::combinators::BoxBody;
 use http_body_util::BodyExt;
 use hyper::body::{Bytes, Incoming};
@@ -14,6 +16,7 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_tungstenite::{tungstenite, WebSocketStream};
 
 use crate::error::Error;
+use crate::uri_to_addr;
 
 pub(crate) fn is_websocket_request(req: &Request<Incoming>) -> bool {
     hyper_tungstenite::is_upgrade_request(req)
@@ -21,12 +24,13 @@ pub(crate) fn is_websocket_request(req: &Request<Incoming>) -> bool {
 
 pub(crate) async fn try_upgrade(
     req: &mut Request<Incoming>,
-    gateway_origin: Arc<String>,
+    gateway_origin: Arc<Uri>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Error> {
     let (res, websocket) = hyper_tungstenite::upgrade(req, None)
         .map_err(|e| Error::BadRequest(format!("Error upgrading to websocket: {}", e)))?;
+    let gateway_addr = uri_to_addr(&gateway_origin).ok_or(Error::InternalServerError)?;
     tokio::spawn(async move {
-        if let Err(e) = serve_websocket(websocket, gateway_origin.as_str()).await {
+        if let Err(e) = serve_websocket(websocket, gateway_addr).await {
             eprintln!("Error in websocket connection: {e}");
         }
     });
@@ -38,10 +42,9 @@ pub(crate) async fn try_upgrade(
 /// Stream WebSocket frames from the client to the gateway server's TCP socket and vice versa.
 async fn serve_websocket(
     websocket: HyperWebsocket,
-    gateway_origin: &str,
+    gateway_addr: SocketAddr,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
-    let addr = gateway_origin.trim_start_matches("https://").trim_start_matches("http://");
-    let mut tcp_stream = tokio::net::TcpStream::connect(addr).await?;
+    let mut tcp_stream = tokio::net::TcpStream::connect(gateway_addr).await?;
     let mut ws_io = WsIo::new(websocket.await?);
     let (_, _) = tokio::io::copy_bidirectional(&mut ws_io, &mut tcp_stream).await?;
     Ok(())

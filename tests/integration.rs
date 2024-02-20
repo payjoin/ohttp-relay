@@ -1,8 +1,10 @@
 #[cfg(test)]
 mod integration {
     use std::net::SocketAddr;
+    use std::str::FromStr;
 
     use hex::FromHex;
+    use http::Uri;
     use http_body_util::combinators::BoxBody;
     use http_body_util::{BodyExt, Full};
     use hyper::body::{Bytes, Incoming};
@@ -24,12 +26,13 @@ mod integration {
     #[tokio::test]
     async fn test_request_response() {
         let gateway_port = find_free_port();
+        let gateway = Uri::from_str(&format!("http://0.0.0.0:{}", gateway_port)).unwrap();
         let relay_port = find_free_port();
         tokio::select! {
             _ = example_gateway_http(gateway_port) => {
                 assert!(false, "Gateway is long running");
             }
-            _ = listen_tcp(relay_port, format!("http://localhost:{}", gateway_port)) => {
+            _ = listen_tcp(relay_port, gateway) => {
                 assert!(false, "Relay is long running");
             }
             _ = ohttp_req_over_tcp(relay_port) => {}
@@ -46,12 +49,13 @@ mod integration {
         }
 
         let gateway_port = find_free_port();
+        let gateway = Uri::from_str(&format!("http://0.0.0.0:{}", gateway_port)).unwrap();
         let socket_path_str = socket_path.to_str().unwrap();
         tokio::select! {
             _ = example_gateway_http(gateway_port) => {
                 assert!(false, "Gateway is long running");
             }
-            _ = listen_socket(socket_path_str, format!("http://localhost:{}", gateway_port)) => {
+            _ = listen_socket(socket_path_str, gateway) => {
                 assert!(false, "Relay is long running");
             }
             _ = ohttp_req_over_unix_socket(socket_path_str) => {}
@@ -199,13 +203,13 @@ mod integration {
                     .with_root_certificates(root_store)
                     .with_no_client_auth();
 
-                let (ws_stream, _res) = connect_async(format!("ws://localhost:{}", relay_port))
+                let (ws_stream, _res) = connect_async(format!("ws://0.0.0.0:{}", relay_port))
                     .await
                     .expect("Failed to connect");
                 println!("Connected to ws");
                 let ws_io = WsIo::new(ws_stream);
                 let connector = TlsConnector::from(Arc::new(config));
-                let domain = pki_types::ServerName::try_from("localhost")
+                let domain = pki_types::ServerName::try_from("0.0.0.0")
                     .map_err(|_| {
                         std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid dnsname")
                     })
@@ -214,7 +218,7 @@ mod integration {
                 let mut tls_stream = connector.connect(domain, ws_io).await.unwrap();
 
                 let content =
-                    b"GET /ohttp-keys HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+                    b"GET /ohttp-keys HTTP/1.1\r\nHost: 0.0.0.0\r\nConnection: close\r\n\r\n";
                 tls_stream.write_all(content).await.unwrap();
                 tls_stream.flush().await.unwrap();
                 let mut plaintext = Vec::new();
@@ -248,12 +252,12 @@ mod integration {
                     .with_root_certificates(root_store)
                     .with_no_client_auth();
                 let proxy =
-                    ureq::Proxy::new(format!("http://localhost:{}", relay_port).as_str()).unwrap();
+                    ureq::Proxy::new(format!("http://0.0.0.0:{}", relay_port).as_str()).unwrap();
                 let https =
                     ureq::AgentBuilder::new().tls_config(Arc::new(config)).proxy(proxy).build();
                 let res = tokio::task::spawn_blocking(move || {
                     https
-                        .get(format!("https://localhost:{}/ohttp-keys", gateway_port).as_str())
+                        .get(format!("https://0.0.0.0:{}/ohttp-keys", gateway_port).as_str())
                         .call()
                         .unwrap()
                 })
@@ -270,6 +274,7 @@ mod integration {
             F: FnOnce(u16, u16, CertificateDer<'static>) -> Pin<Box<dyn Future<Output = ()>>>,
         {
             let gateway_port = find_free_port();
+            let gateway = Uri::from_str(&format!("http://0.0.0.0:{}", gateway_port)).unwrap();
             let relay_port = find_free_port();
             let (key, cert) = gen_localhost_cert();
             let cert_clone = cert.clone();
@@ -277,7 +282,7 @@ mod integration {
                 _ = example_gateway_https(gateway_port, (key, cert)) => {
                     assert!(false, "Gateway is long running");
                 }
-                _ = listen_tcp(relay_port, format!("http://localhost:{}", gateway_port)) => {
+                _ = listen_tcp(relay_port, gateway) => {
                     assert!(false, "Relay is long running");
                 }
                 _ = client_fn(relay_port, gateway_port, cert_clone) => {}
@@ -327,7 +332,7 @@ mod integration {
         }
 
         fn gen_localhost_cert() -> (PrivateKeyDer<'static>, CertificateDer<'static>) {
-            let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+            let cert = rcgen::generate_simple_self_signed(vec!["0.0.0.0".to_string()]).unwrap();
             let key =
                 PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(cert.serialize_private_key_der()));
             let cert = CertificateDer::from(cert.serialize_der().unwrap());
