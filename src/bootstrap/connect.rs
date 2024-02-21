@@ -65,11 +65,11 @@ mod test {
 
     use super::*;
 
-    static GATEWAY_ORIGIN: Lazy<Uri> = Lazy::new(|| Uri::from_static("https://gateway.com"));
+    static GATEWAY_ORIGIN: Lazy<Uri> = Lazy::new(|| Uri::from_static("https://0.0.0.0:8080"));
 
     #[test]
     fn mismatched_gateways_not_allowed() {
-        let not_gateway_origin = "https://not-gateway.com";
+        let not_gateway_origin = "https://0.0.0.0:8081";
         let req = hyper::Request::builder().uri(not_gateway_origin).body(()).unwrap();
         let allowable_gateway = find_allowable_gateway(&req, &*GATEWAY_ORIGIN);
         assert!(allowable_gateway.is_none());
