@@ -34,7 +34,7 @@ pub async fn listen_tcp(
     port: u16,
     gateway_origin: Uri,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(addr).await?;
     println!("OHTTP relay listening on tcp://{}", addr);
     ohttp_relay(listener, gateway_origin).await
