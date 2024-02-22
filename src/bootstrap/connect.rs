@@ -51,6 +51,8 @@ async fn tunnel(upgraded: Upgraded, addr: SocketAddr) -> std::io::Result<()> {
 /// This prevents the relay from being used as an arbitrary proxy
 /// to any host on the internet.
 fn find_allowable_gateway<B>(req: &Request<B>, gateway_origin: &Uri) -> Option<SocketAddr> {
+    dbg!("req.uri().authority()", req.uri().authority());
+    dbg!("gateway_origin.authority()", gateway_origin.authority());
     if req.uri().authority() != gateway_origin.authority() {
         return None;
     }
@@ -78,6 +80,7 @@ mod test {
     #[test]
     fn matched_gateways_allowed() {
         let req = Request::builder().uri(&*GATEWAY_ORIGIN).body(()).unwrap();
+        dbg!("req", &req);
         assert!(find_allowable_gateway(&req, &*GATEWAY_ORIGIN).is_some());
     }
 }

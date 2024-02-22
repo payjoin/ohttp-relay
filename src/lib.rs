@@ -152,14 +152,20 @@ pub(crate) fn uri_to_addr(uri: &Uri) -> Option<SocketAddr> {
     let parts: Vec<&str> = authority.split(':').collect();
     let host = parts.first()?;
     let port = parts.get(1).and_then(|p| p.parse::<u16>().ok());
-
+    // dbg statements
+    dbg!("host", host);
+    dbg!("port", port);
+    dbg!("authority", authority);
     let default_port = match uri.scheme_str() {
         Some("https") => 443,
         _ => 80, // Default to 80 if it's not https or if the scheme is not specified
     };
 
     let addr_str = format!("{}:{}", host, port.unwrap_or(default_port));
-    addr_str.to_socket_addrs().ok()?.next()
+    dbg!("addr_str", &addr_str);
+    let sock = addr_str.to_socket_addrs().ok()?.next();
+    dbg!("sock", &sock);
+    sock
 }
 
 pub(crate) fn empty() -> BoxBody<Bytes, hyper::Error> {
