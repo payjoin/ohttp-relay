@@ -103,7 +103,7 @@ mod integration {
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         let mut req = Request::new(full(Vec::from_hex(ENCAPSULATED_REQ).unwrap()).boxed());
         *req.method_mut() = hyper::Method::POST;
-        *req.uri_mut() = format!("http://127.0.0.1:{}/", relay_port).parse().unwrap();
+        *req.uri_mut() = format!("http://0.0.0.0:{}/", relay_port).parse().unwrap();
         req.headers_mut().insert(CONTENT_TYPE, HeaderValue::from_static("message/ohttp-req"));
         req.headers_mut().insert(CONTENT_LENGTH, HeaderValue::from_static("78"));
         let https =
@@ -158,7 +158,7 @@ mod integration {
     }
 
     fn find_free_port() -> u16 {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
         listener.local_addr().unwrap().port()
     }
 
