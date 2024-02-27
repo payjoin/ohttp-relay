@@ -21,6 +21,13 @@ jobs:
         with:
           toolchain: ${{ matrix.rust }}
           override: true
+      - uses: cachix/install-nix-action@v25
+        with:
+          nix_path: nixpkgs=channel:nixos-23.11
+      - name: Add nginxWithStream to PATH
+        run: |
+          nix build .#nginx-with-stream -o nginx
+          echo "$(pwd)/nginx/bin" >> $GITHUB_PATH
       - name: Fixes for MSRV
         if: matrix.rust == '1.63.0'
         run: |

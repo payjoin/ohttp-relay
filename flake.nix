@@ -7,20 +7,23 @@
       url = "github:ipetkov/crane";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    nginx-with-stream = {
-      url = "path:./nginx-with-stream";
-    };
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, crane, nginx-with-stream, flake-utils, ... }:
+  outputs = { self, nixpkgs, crane, flake-utils, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
 
         craneLib = crane.lib.${system};
 
-        nginxWithStream = nginx-with-stream.packages.${system}.nginx-with-stream;
+        nginxWithStream = pkgs.nginxMainline.overrideAttrs (oldAttrs: {
+          configureFlags = oldAttrs.configureFlags ++ [
+            "--with-stream"
+            "--with-stream_ssl_module"
+            "--error-log-path=/dev/null"
+          ];
+        });
 
         ohttp-relay = craneLib.buildPackage {
           src = craneLib.cleanCargoSource (craneLib.path ./.);
@@ -47,6 +50,7 @@
           inherit ohttp-relay;
         };
 
+        packages.nginx-with-stream = nginxWithStream;
         packages.default = ohttp-relay;
 
         apps.default = flake-utils.lib.mkApp {

@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod integration {
     use std::net::SocketAddr;
+    use std::path::PathBuf;
     use std::str::FromStr;
 
     use hex::FromHex;
@@ -16,7 +17,9 @@ mod integration {
     use hyper_util::client::legacy::Client;
     use hyper_util::rt::{TokioExecutor, TokioIo};
     use ohttp_relay::*;
+    use tempfile::NamedTempFile;
     use tokio::net::{TcpListener, TcpStream, UnixStream};
+    use tokio::process::Command;
 
     const ENCAPSULATED_REQ: &str = "010020000100014b28f881333e7c164ffc499ad9796f877f4e1051ee6d31bad19dec96c208b4726374e469135906992e1268c594d2a10c695d858c40a026e7965e7d86b83dd440b2c0185204b4d63525";
     const ENCAPSULATED_RES: &str =
@@ -278,6 +281,8 @@ mod integration {
             let relay_port = find_free_port();
             let (key, cert) = gen_localhost_cert();
             let cert_clone = cert.clone();
+            let n_http_port = find_free_port();
+            let _nginx = start_nginx(n_http_port, relay_port).await;
             tokio::select! {
                 _ = example_gateway_https(gateway_port, (key, cert)) => {
                     assert!(false, "Gateway is long running");
@@ -285,7 +290,7 @@ mod integration {
                 _ = listen_tcp(relay_port, gateway) => {
                     assert!(false, "Relay is long running");
                 }
-                _ = client_fn(relay_port, gateway_port, cert_clone) => {}
+                _ = client_fn(n_http_port, gateway_port, cert_clone) => {}
             }
         }
 
@@ -338,6 +343,66 @@ mod integration {
             let cert = CertificateDer::from(cert.serialize_der().unwrap());
             (key, cert)
         }
+    }
+
+    struct NginxProcess {
+        _child: tokio::process::Child,
+        config_path: PathBuf,
+    }
+
+    impl Drop for NginxProcess {
+        fn drop(&mut self) {
+            // NGINX spawns child processes. Gracefully shut them all down.
+            let _ = Command::new("nginx")
+                .arg("-s")
+                .arg("stop")
+                .arg("-c")
+                .arg(self.config_path.as_os_str())
+                .status();
+        }
+    }
+
+    async fn start_nginx(n_http_port: u16, relay_port: u16) -> NginxProcess {
+        use std::io::Write;
+
+        let temp_dir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".into()); // Use Nix's TMPDIR
+        let unique_suffix = uuid::Uuid::new_v4().to_string(); // Ensures uniqueness
+
+        let error_log_path = format!("{}/nginx_error_{}.log", temp_dir, unique_suffix);
+        let pid_path = format!("{}/nginx_{}.pid", temp_dir, unique_suffix);
+        let nginx_conf = format!(
+            r#"
+            error_log {} debug;
+            pid {};
+
+            events {{
+                worker_connections 1024;
+            }}
+
+            stream {{
+                server {{
+                    listen {};
+
+                    proxy_pass 0.0.0.0:{};
+                }}
+            }}
+            "#,
+            error_log_path, pid_path, n_http_port, relay_port,
+        );
+        let mut config_file =
+            NamedTempFile::new().expect("Failed to create temp file for nginx config");
+        writeln!(config_file, "{}", nginx_conf).expect("Failed to write nginx config");
+        let config_path = config_file.path().to_path_buf();
+        let _child = Command::new("nginx")
+            .arg("-c")
+            .arg(config_path.as_os_str())
+            .spawn()
+            .expect("Failed to start nginx");
+
+        // Keep the config file open as long as NGINX is using it
+        std::mem::forget(config_file);
+
+        NginxProcess { _child, config_path }
     }
 
     fn full<T: Into<Bytes>>(chunk: T) -> BoxBody<Bytes, hyper::Error> {
