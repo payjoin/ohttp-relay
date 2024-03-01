@@ -31,6 +31,8 @@ mod integration {
         let gateway_port = find_free_port();
         let gateway = Uri::from_str(&format!("http://0.0.0.0:{}", gateway_port)).unwrap();
         let relay_port = find_free_port();
+        let n_http_port = find_free_port();
+        let _nginx = start_nginx(n_http_port, format!("0.0.0.0:{}", relay_port)).await;
         tokio::select! {
             _ = example_gateway_http(gateway_port) => {
                 assert!(false, "Gateway is long running");
@@ -38,7 +40,7 @@ mod integration {
             _ = listen_tcp(relay_port, gateway) => {
                 assert!(false, "Relay is long running");
             }
-            _ = ohttp_req_over_tcp(relay_port) => {}
+            _ = ohttp_req_over_tcp(n_http_port) => {}
         }
     }
 
@@ -54,6 +56,8 @@ mod integration {
         let gateway_port = find_free_port();
         let gateway = Uri::from_str(&format!("http://0.0.0.0:{}", gateway_port)).unwrap();
         let socket_path_str = socket_path.to_str().unwrap();
+        let n_http_port = find_free_port();
+        let _nginx = start_nginx(n_http_port, format!("unix:{}", socket_path_str)).await;
         tokio::select! {
             _ = example_gateway_http(gateway_port) => {
                 assert!(false, "Gateway is long running");
@@ -282,7 +286,7 @@ mod integration {
             let (key, cert) = gen_localhost_cert();
             let cert_clone = cert.clone();
             let n_http_port = find_free_port();
-            let _nginx = start_nginx(n_http_port, relay_port).await;
+            let _nginx = start_nginx(n_http_port, format!("0.0.0.0:{}", relay_port)).await;
             tokio::select! {
                 _ = example_gateway_https(gateway_port, (key, cert)) => {
                     assert!(false, "Gateway is long running");
@@ -362,7 +366,7 @@ mod integration {
         }
     }
 
-    async fn start_nginx(n_http_port: u16, relay_port: u16) -> NginxProcess {
+    async fn start_nginx(n_http_port: u16, proxy_pass: String) -> NginxProcess {
         use std::io::Write;
 
         let temp_dir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".into()); // Use Nix's TMPDIR
@@ -383,11 +387,11 @@ mod integration {
                 server {{
                     listen {};
 
-                    proxy_pass 0.0.0.0:{};
+                    proxy_pass {};
                 }}
             }}
             "#,
-            error_log_path, pid_path, n_http_port, relay_port,
+            error_log_path, pid_path, n_http_port, proxy_pass,
         );
         let mut config_file =
             NamedTempFile::new().expect("Failed to create temp file for nginx config");
