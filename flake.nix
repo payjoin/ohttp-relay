@@ -32,7 +32,6 @@
           buildInputs = [
             nginxWithStream
           ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
-            # Additional darwin specific inputs can be set here
             pkgs.libiconv
             pkgs.darwin.apple_sdk.frameworks.Security
           ];
@@ -40,9 +39,6 @@
           preBuild = ''
             export PATH=${nginxWithStream}/bin:$PATH
           '';
-
-          # Additional environment variables can be set directly
-          # MY_CUSTOM_VAR = "some value";
         };
       in
       {
@@ -58,13 +54,8 @@
         };
 
         devShells.default = craneLib.devShell {
-          # Inherit inputs from checks.
           checks = self.checks.${system};
 
-          # Additional dev-shell environment variables can be set directly
-          # MY_CUSTOM_DEVELOPMENT_VAR = "something else";
-
-          # Extra inputs can be added here; cargo and rustc are provided by default.
           packages = [
             nginxWithStream
             pkgs.rustup
