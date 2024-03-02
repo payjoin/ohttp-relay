@@ -17,8 +17,10 @@ mod integration {
     use hyper_util::client::legacy::Client;
     use hyper_util::rt::{TokioExecutor, TokioIo};
     use ohttp_relay::*;
+    use rcgen::Certificate;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
     use tempfile::NamedTempFile;
-    use tokio::net::{TcpListener, TcpStream, UnixStream};
+    use tokio::net::{TcpListener, TcpStream};
     use tokio::process::Command;
 
     const ENCAPSULATED_REQ: &str = "010020000100014b28f881333e7c164ffc499ad9796f877f4e1051ee6d31bad19dec96c208b4726374e469135906992e1268c594d2a10c695d858c40a026e7965e7d86b83dd440b2c0185204b4d63525";
@@ -27,12 +29,17 @@ mod integration {
 
     /// See: https://www.ietf.org/rfc/rfc9458.html#name-complete-example-of-a-reque
     #[tokio::test]
-    async fn test_request_response() {
+    async fn test_request_response_tcp() {
         let gateway_port = find_free_port();
         let gateway = Uri::from_str(&format!("http://0.0.0.0:{}", gateway_port)).unwrap();
         let relay_port = find_free_port();
         let n_http_port = find_free_port();
-        let _nginx = start_nginx(n_http_port, format!("0.0.0.0:{}", relay_port)).await;
+        let n_https_port = find_free_port();
+        let nginx_cert = gen_localhost_cert();
+        let nginx_cert_der = cert_to_cert_der(&nginx_cert);
+        let _nginx =
+            start_nginx(n_http_port, n_https_port, format!("0.0.0.0:{}", relay_port), nginx_cert)
+                .await;
         tokio::select! {
             _ = example_gateway_http(gateway_port) => {
                 assert!(false, "Gateway is long running");
@@ -40,7 +47,7 @@ mod integration {
             _ = listen_tcp(relay_port, gateway) => {
                 assert!(false, "Relay is long running");
             }
-            _ = ohttp_req_over_tcp(n_http_port) => {}
+            _ = ohttp_req(n_https_port, nginx_cert_der) => {}
         }
     }
 
@@ -55,9 +62,14 @@ mod integration {
 
         let gateway_port = find_free_port();
         let gateway = Uri::from_str(&format!("http://0.0.0.0:{}", gateway_port)).unwrap();
+        let nginx_cert = gen_localhost_cert();
+        let nginx_cert_der = cert_to_cert_der(&nginx_cert);
         let socket_path_str = socket_path.to_str().unwrap();
         let n_http_port = find_free_port();
-        let _nginx = start_nginx(n_http_port, format!("unix:{}", socket_path_str)).await;
+        let n_https_port = find_free_port();
+        let _nginx =
+            start_nginx(n_http_port, n_https_port, format!("unix:{}", socket_path_str), nginx_cert)
+                .await;
         tokio::select! {
             _ = example_gateway_http(gateway_port) => {
                 assert!(false, "Gateway is long running");
@@ -65,7 +77,7 @@ mod integration {
             _ = listen_socket(socket_path_str, gateway) => {
                 assert!(false, "Relay is long running");
             }
-            _ = ohttp_req_over_unix_socket(socket_path_str) => {}
+            _ = ohttp_req(n_https_port, nginx_cert_der) => {}
         }
     }
 
@@ -106,38 +118,28 @@ mod integration {
         Ok(res)
     }
 
-    async fn ohttp_req_over_tcp(relay_port: u16) -> () {
+    async fn ohttp_req(relay_port: u16, cert: CertificateDer<'static>) -> () {
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         let mut req = Request::new(full(Vec::from_hex(ENCAPSULATED_REQ).unwrap()).boxed());
         *req.method_mut() = hyper::Method::POST;
-        *req.uri_mut() = format!("http://0.0.0.0:{}/", relay_port).parse().unwrap();
+        *req.uri_mut() = format!("https://0.0.0.0:{}/", relay_port).parse().unwrap();
         req.headers_mut().insert(CONTENT_TYPE, HeaderValue::from_static("message/ohttp-req"));
         req.headers_mut().insert(CONTENT_LENGTH, HeaderValue::from_static("78"));
-        let https =
-            HttpsConnectorBuilder::new().with_webpki_roots().https_or_http().enable_http1().build();
+
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.add(cert).unwrap();
+
+        let config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+
+        let https = HttpsConnectorBuilder::new()
+            .with_tls_config(config)
+            .https_or_http()
+            .enable_http1()
+            .build();
         let client = Client::builder(TokioExecutor::new()).build(https);
         let res = client.request(req).await.unwrap();
-        assert_eq!(res.status(), hyper::StatusCode::OK);
-        assert_eq!(
-            res.headers().get(CONTENT_TYPE),
-            Some(&HeaderValue::from_static("message/ohttp-res"))
-        );
-        assert_eq!(res.headers().get(CONTENT_LENGTH), Some(&HeaderValue::from_static("35")));
-    }
-
-    async fn ohttp_req_over_unix_socket(socket_path: &str) -> () {
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        let stream = TokioIo::new(UnixStream::connect(socket_path).await.unwrap());
-        let (mut sender, conn) = hyper::client::conn::http1::handshake(stream).await.unwrap();
-        tokio::task::spawn(async move {
-            conn.await.unwrap();
-        });
-        let mut req = Request::new(full(Vec::from_hex(ENCAPSULATED_REQ).unwrap()).boxed());
-        *req.method_mut() = hyper::Method::POST;
-        *req.uri_mut() = format!("http://unix-socket-ignores-this.com").parse().unwrap();
-        req.headers_mut().insert(CONTENT_TYPE, HeaderValue::from_static("message/ohttp-req"));
-        req.headers_mut().insert(CONTENT_LENGTH, HeaderValue::from_static("78"));
-        let res = sender.send_request(req).await.unwrap();
         assert_eq!(res.status(), hyper::StatusCode::OK);
         assert_eq!(
             res.headers().get(CONTENT_TYPE),
@@ -176,7 +178,7 @@ mod integration {
         use std::pin::Pin;
         use std::sync::Arc;
 
-        use rustls::pki_types::{self, CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+        use rustls::pki_types::{self, CertificateDer};
         use rustls::ServerConfig;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio_rustls::{TlsAcceptor, TlsConnector};
@@ -283,26 +285,34 @@ mod integration {
             let gateway_port = find_free_port();
             let gateway = Uri::from_str(&format!("http://0.0.0.0:{}", gateway_port)).unwrap();
             let relay_port = find_free_port();
-            let (key, cert) = gen_localhost_cert();
-            let cert_clone = cert.clone();
+            let nginx_cert = gen_localhost_cert();
+            let gateway_cert = gen_localhost_cert();
+            let gateway_cert_der = cert_to_cert_der(&gateway_cert);
             let n_http_port = find_free_port();
-            let _nginx = start_nginx(n_http_port, format!("0.0.0.0:{}", relay_port)).await;
+            let n_https_port = find_free_port();
+            let _nginx = start_nginx(
+                n_http_port,
+                n_https_port,
+                format!("0.0.0.0:{}", relay_port),
+                nginx_cert,
+            )
+            .await;
             tokio::select! {
-                _ = example_gateway_https(gateway_port, (key, cert)) => {
+                _ = example_gateway_https(gateway_port, gateway_cert) => {
                     assert!(false, "Gateway is long running");
                 }
                 _ = listen_tcp(relay_port, gateway) => {
                     assert!(false, "Relay is long running");
                 }
-                _ = client_fn(n_http_port, gateway_port, cert_clone) => {}
+                _ = client_fn(n_http_port, gateway_port, gateway_cert_der) => {}
             }
         }
 
         async fn example_gateway_https(
             port: u16,
-            cert_pair: (PrivateKeyDer<'static>, CertificateDer<'static>),
+            cert: Certificate,
         ) -> Result<(), Box<dyn std::error::Error>> {
-            let acceptor = Arc::new(build_tls_acceptor(cert_pair));
+            let acceptor = Arc::new(build_tls_acceptor(cert));
 
             example_gateway(port, move |stream| {
                 let acceptor = acceptor.clone();
@@ -330,23 +340,30 @@ mod integration {
             Ok(res)
         }
 
-        fn build_tls_acceptor(
-            cert_pair: (PrivateKeyDer<'static>, CertificateDer<'static>),
-        ) -> TlsAcceptor {
+        fn build_tls_acceptor(cert: Certificate) -> TlsAcceptor {
+            let (key, cert) = cert_to_key_cert_der(cert);
             let server_config = ServerConfig::builder()
                 .with_no_client_auth()
-                .with_single_cert(vec![cert_pair.1], cert_pair.0)
+                .with_single_cert(vec![cert], key)
                 .unwrap();
             tokio_rustls::TlsAcceptor::from(Arc::new(server_config))
         }
+    }
 
-        fn gen_localhost_cert() -> (PrivateKeyDer<'static>, CertificateDer<'static>) {
-            let cert = rcgen::generate_simple_self_signed(vec!["0.0.0.0".to_string()]).unwrap();
-            let key =
-                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(cert.serialize_private_key_der()));
-            let cert = CertificateDer::from(cert.serialize_der().unwrap());
-            (key, cert)
-        }
+    fn gen_localhost_cert() -> Certificate {
+        rcgen::generate_simple_self_signed(vec!["0.0.0.0".to_string()]).unwrap()
+    }
+
+    fn cert_to_key_cert_der(
+        cert: Certificate,
+    ) -> (PrivateKeyDer<'static>, CertificateDer<'static>) {
+        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(cert.serialize_private_key_der()));
+        let cert = CertificateDer::from(cert.serialize_der().unwrap());
+        (key, cert)
+    }
+
+    fn cert_to_cert_der(cert: &Certificate) -> CertificateDer<'static> {
+        CertificateDer::from(cert.serialize_der().unwrap())
     }
 
     struct NginxProcess {
@@ -366,7 +383,12 @@ mod integration {
         }
     }
 
-    async fn start_nginx(n_http_port: u16, proxy_pass: String) -> NginxProcess {
+    async fn start_nginx(
+        n_http_port: u16,
+        n_https_port: u16,
+        proxy_pass: String,
+        cert: Certificate,
+    ) -> NginxProcess {
         use std::io::Write;
 
         let temp_dir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".into()); // Use Nix's TMPDIR
@@ -374,6 +396,15 @@ mod integration {
 
         let error_log_path = format!("{}/nginx_error_{}.log", temp_dir, unique_suffix);
         let pid_path = format!("{}/nginx_{}.pid", temp_dir, unique_suffix);
+
+        let cert_path = format!("{}/cert_{}.pem", temp_dir, unique_suffix);
+        std::fs::write(&cert_path, cert.serialize_pem().unwrap())
+            .expect("Failed to write gateway cert");
+
+        let key_path = format!("{}/key_{}.pem", temp_dir, unique_suffix);
+        std::fs::write(&key_path, cert.serialize_private_key_pem())
+            .expect("Failed to write gateway key");
+
         let nginx_conf = format!(
             r#"
             error_log {} debug;
@@ -389,9 +420,25 @@ mod integration {
 
                     proxy_pass {};
                 }}
+
+                server {{
+                    listen {} ssl;
+
+                    ssl_certificate {};
+                    ssl_certificate_key {};
+
+                    proxy_pass {};
+                }}
             }}
             "#,
-            error_log_path, pid_path, n_http_port, proxy_pass,
+            error_log_path,
+            pid_path,
+            n_http_port,
+            proxy_pass,
+            n_https_port,
+            cert_path,
+            key_path,
+            proxy_pass
         );
         let mut config_file =
             NamedTempFile::new().expect("Failed to create temp file for nginx config");
