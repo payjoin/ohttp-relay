@@ -67,7 +67,16 @@
           # Extra inputs can be added here; cargo and rustc are provided by default.
           packages = [
             nginxWithStream
+            pkgs.rustup
           ];
+
+          shellHook = ''
+            # Setup the Rust Nightly toolchain with rustup
+            rustup default nightly
+
+            # Optionally, you can also include components like rust-src for Rust Analyzer
+            rustup component add rust-src
+          '';
         };
       });
 }
