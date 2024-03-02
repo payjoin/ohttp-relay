@@ -1,5 +1,7 @@
 #[cfg(test)]
 mod integration {
+    use std::fs::File;
+    use std::io::Read;
     use std::net::SocketAddr;
     use std::path::PathBuf;
     use std::str::FromStr;
@@ -405,41 +407,23 @@ mod integration {
         std::fs::write(&key_path, cert.serialize_private_key_pem())
             .expect("Failed to write gateway key");
 
-        let nginx_conf = format!(
-            r#"
-            error_log {} debug;
-            pid {};
+        let template_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("nginx.conf.template")
+            .canonicalize()
+            .unwrap();
+        let mut template_file = File::open(template_path).expect("Failed to open template file");
+        let mut template_content = String::new();
+        template_file.read_to_string(&mut template_content).expect("Failed to read template file");
 
-            events {{
-                worker_connections 1024;
-            }}
+        let nginx_conf = template_content
+            .replace("{{error_log_path}}", &error_log_path.to_string())
+            .replace("{{pid_path}}", &pid_path.to_string())
+            .replace("{{http_port}}", &n_http_port.to_string())
+            .replace("{{https_port}}", &n_https_port.to_string())
+            .replace("{{proxy_pass}}", &proxy_pass)
+            .replace("{{cert_path}}", &cert_path)
+            .replace("{{key_path}}", &key_path);
 
-            stream {{
-                server {{
-                    listen {};
-
-                    proxy_pass {};
-                }}
-
-                server {{
-                    listen {} ssl;
-
-                    ssl_certificate {};
-                    ssl_certificate_key {};
-
-                    proxy_pass {};
-                }}
-            }}
-            "#,
-            error_log_path,
-            pid_path,
-            n_http_port,
-            proxy_pass,
-            n_https_port,
-            cert_path,
-            key_path,
-            proxy_pass
-        );
         let mut config_file =
             NamedTempFile::new().expect("Failed to create temp file for nginx config");
         writeln!(config_file, "{}", nginx_conf).expect("Failed to write nginx config");
