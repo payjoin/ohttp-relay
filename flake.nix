@@ -62,11 +62,9 @@
           ];
 
           shellHook = ''
-            # Setup the Rust Nightly toolchain with rustup
             rustup default nightly
-
-            # Optionally, you can also include components like rust-src for Rust Analyzer
             rustup component add rust-src
+            export PATH=${pkgs.rustup}/bin:$PATH
           '';
         };
       });

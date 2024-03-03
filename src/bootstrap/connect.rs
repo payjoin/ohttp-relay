@@ -1,7 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use http::Uri;
 use http_body_util::combinators::BoxBody;
 use hyper::body::{Bytes, Incoming};
 use hyper::upgrade::Upgraded;
@@ -10,7 +9,7 @@ use hyper_util::rt::TokioIo;
 use tokio::net::TcpStream;
 
 use crate::error::Error;
-use crate::{empty, uri_to_addr};
+use crate::{empty, uri_to_addr, GatewayUri};
 
 pub(crate) fn is_connect_request(req: &Request<Incoming>) -> bool {
     Method::CONNECT == req.method()
@@ -18,7 +17,7 @@ pub(crate) fn is_connect_request(req: &Request<Incoming>) -> bool {
 
 pub(crate) async fn try_upgrade(
     req: Request<Incoming>,
-    gateway_origin: Arc<Uri>,
+    gateway_origin: Arc<GatewayUri>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Error> {
     if let Some(addr) = find_allowable_gateway(&req, &gateway_origin) {
         tokio::task::spawn(async move {
@@ -50,7 +49,7 @@ async fn tunnel(upgraded: Upgraded, addr: SocketAddr) -> std::io::Result<()> {
 /// Only allow CONNECT requests to the configured OHTTP gateway authority.
 /// This prevents the relay from being used as an arbitrary proxy
 /// to any host on the internet.
-fn find_allowable_gateway<B>(req: &Request<B>, gateway_origin: &Uri) -> Option<SocketAddr> {
+fn find_allowable_gateway<B>(req: &Request<B>, gateway_origin: &GatewayUri) -> Option<SocketAddr> {
     if req.uri().authority() != gateway_origin.authority() {
         return None;
     }
@@ -60,16 +59,18 @@ fn find_allowable_gateway<B>(req: &Request<B>, gateway_origin: &Uri) -> Option<S
 
 #[cfg(test)]
 mod test {
+    use http::Uri;
     use hyper::Request;
     use once_cell::sync::Lazy;
 
     use super::*;
 
-    static GATEWAY_ORIGIN: Lazy<Uri> = Lazy::new(|| Uri::from_static("https://0.0.0.0:8080"));
+    static GATEWAY_ORIGIN: Lazy<GatewayUri> =
+        Lazy::new(|| GatewayUri::new(Uri::from_static("https://0.0.0.0")).unwrap());
 
     #[test]
     fn mismatched_gateways_not_allowed() {
-        let not_gateway_origin = "https://0.0.0.0:8081";
+        let not_gateway_origin = "https://0.0.0.0:4433";
         let req = hyper::Request::builder().uri(not_gateway_origin).body(()).unwrap();
         let allowable_gateway = find_allowable_gateway(&req, &*GATEWAY_ORIGIN);
         assert!(allowable_gateway.is_none());
@@ -77,7 +78,8 @@ mod test {
 
     #[test]
     fn matched_gateways_allowed() {
-        let req = Request::builder().uri(&*GATEWAY_ORIGIN).body(()).unwrap();
+        // ensure GatewayUri port is defined automatically
+        let req = Request::builder().uri("https://0.0.0.0:443").body(()).unwrap();
         assert!(find_allowable_gateway(&req, &*GATEWAY_ORIGIN).is_some());
     }
 }
