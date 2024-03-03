@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures::{Sink, SinkExt, StreamExt};
-use http::Uri;
 use http_body_util::combinators::BoxBody;
 use http_body_util::BodyExt;
 use hyper::body::{Bytes, Incoming};
@@ -16,6 +15,7 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_tungstenite::{tungstenite, WebSocketStream};
 
 use crate::error::Error;
+use crate::gateway_uri::GatewayUri;
 use crate::uri_to_addr;
 
 pub(crate) fn is_websocket_request(req: &Request<Incoming>) -> bool {
@@ -24,7 +24,7 @@ pub(crate) fn is_websocket_request(req: &Request<Incoming>) -> bool {
 
 pub(crate) async fn try_upgrade(
     req: &mut Request<Incoming>,
-    gateway_origin: Arc<Uri>,
+    gateway_origin: Arc<GatewayUri>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Error> {
     let (res, websocket) = hyper_tungstenite::upgrade(req, None)
         .map_err(|e| Error::BadRequest(format!("Error upgrading to websocket: {}", e)))?;

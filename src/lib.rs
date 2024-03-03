@@ -1,6 +1,7 @@
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 
+use gateway_uri::GatewayUri;
 use http::uri::PathAndQuery;
 use http::Uri;
 use http_body_util::combinators::BoxBody;
@@ -19,6 +20,7 @@ use tokio::net::{TcpListener, UnixListener};
 use tokio_util::net::Listener;
 
 pub mod error;
+mod gateway_uri;
 use crate::error::Error;
 
 #[cfg(any(feature = "connect-bootstrap", feature = "ws-bootstrap"))]
@@ -57,7 +59,8 @@ where
     L: Listener + Unpin,
     L::Io: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let gateway_origin = Arc::new(gateway_origin);
+    let gateway_origin = GatewayUri::new(gateway_origin)?;
+    let gateway_origin: Arc<GatewayUri> = Arc::new(gateway_origin);
 
     while let Ok((stream, _)) = listener.accept().await {
         let gateway_origin = gateway_origin.clone();
@@ -81,7 +84,7 @@ where
 
 async fn serve_ohttp_relay(
     req: Request<Incoming>,
-    gateway_origin: Arc<Uri>,
+    gateway_origin: Arc<GatewayUri>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
     println!("req: {:?}", req);
     let res = match req.method() {
@@ -97,7 +100,7 @@ async fn serve_ohttp_relay(
 
 async fn handle_ohttp_relay(
     req: Request<Incoming>,
-    gateway_origin: &Uri,
+    gateway_origin: &GatewayUri,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Error> {
     let fwd_req = into_forward_req(req, gateway_origin)?;
     forward_request(fwd_req).await.map(|res| {
