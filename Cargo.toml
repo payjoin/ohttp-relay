@@ -35,6 +35,9 @@ tokio-util = { version = "0.7", features = ["net", "codec"] }
 
 [dev-dependencies]
 hex = { package = "hex-conservative", version = "0.1.1" }
-rcgen = { version = "0.12", default-features = false, features = ["ring"] }
+rcgen = "0.12"
+tempfile = "3"
+tokio = { version = "1", features = ["process"] }
 tokio-rustls = "0.25"
 ureq = "2"
+uuid = { version = "0.8", features = ["v4"] }
