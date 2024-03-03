@@ -1,6 +1,6 @@
 [package]
 name = "ohttp-relay"
-version = "0.0.3"
+version = "0.0.4"
 authors = ["Dan Gould <d@ngould.dev>"]
 description = "Relay Oblivious HTTP requests to protect IP metadata"
 repository = "https://github.com/payjoin/ohttp-relay"
