@@ -26,7 +26,10 @@
         });
 
         ohttp-relay = craneLib.buildPackage {
-          src = craneLib.cleanCargoSource (craneLib.path ./.);
+          src = pkgs.lib.cleanSourceWith {
+            src = craneLib.path ./.;
+            filter = path: type: builtins.match ".*\\.template$" path != null || craneLib.filterCargoSources path type;
+          };
           strictDeps = true;
 
           buildInputs = [
