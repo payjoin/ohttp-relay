@@ -3,6 +3,7 @@ use std::sync::Arc;
 use http_body_util::combinators::BoxBody;
 use hyper::body::{Bytes, Incoming};
 use hyper::{Request, Response};
+use tracing::instrument;
 
 use crate::error::Error;
 use crate::GatewayUri;
@@ -13,6 +14,7 @@ pub mod connect;
 #[cfg(feature = "ws-bootstrap")]
 pub mod ws;
 
+#[instrument]
 pub(crate) async fn handle_ohttp_keys(
     mut req: Request<Incoming>,
     gateway_origin: Arc<GatewayUri>,

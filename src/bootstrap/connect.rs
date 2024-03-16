@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -7,6 +8,7 @@ use hyper::upgrade::Upgraded;
 use hyper::{Method, Request, Response};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpStream;
+use tracing::{error, instrument};
 
 use crate::error::Error;
 use crate::{empty, uri_to_addr, GatewayUri};
@@ -15,6 +17,7 @@ pub(crate) fn is_connect_request(req: &Request<Incoming>) -> bool {
     Method::CONNECT == req.method()
 }
 
+#[instrument]
 pub(crate) async fn try_upgrade(
     req: Request<Incoming>,
     gateway_origin: Arc<GatewayUri>,
@@ -24,21 +27,22 @@ pub(crate) async fn try_upgrade(
             match hyper::upgrade::on(req).await {
                 Ok(upgraded) => {
                     if let Err(e) = tunnel(upgraded, addr).await {
-                        eprintln!("server io error: {}", e);
+                        error!("server io error: {}", e);
                     };
                 }
-                Err(e) => eprintln!("upgrade error: {}", e),
+                Err(e) => error!("upgrade error: {}", e),
             }
         });
         Ok(Response::new(empty()))
     } else {
-        eprintln!("CONNECT host is not socket addr: {:?}", req.uri());
+        error!("CONNECT host is not socket addr: {:?}", req.uri());
         Err(Error::BadRequest("CONNECT Host must be a known gateway socket address".to_string()))
     }
 }
 
 /// Create a TCP connection to host:port, build a tunnel between the connection and
 /// the upgraded connection
+#[instrument]
 async fn tunnel(upgraded: Upgraded, addr: SocketAddr) -> std::io::Result<()> {
     let mut server = TcpStream::connect(addr).await?;
     let mut upgraded = TokioIo::new(upgraded);
@@ -49,7 +53,11 @@ async fn tunnel(upgraded: Upgraded, addr: SocketAddr) -> std::io::Result<()> {
 /// Only allow CONNECT requests to the configured OHTTP gateway authority.
 /// This prevents the relay from being used as an arbitrary proxy
 /// to any host on the internet.
-fn find_allowable_gateway<B>(req: &Request<B>, gateway_origin: &GatewayUri) -> Option<SocketAddr> {
+#[instrument]
+fn find_allowable_gateway<B>(req: &Request<B>, gateway_origin: &GatewayUri) -> Option<SocketAddr>
+where
+    B: Debug,
+{
     if req.uri().authority() != gateway_origin.authority() {
         return None;
     }
@@ -60,16 +68,18 @@ fn find_allowable_gateway<B>(req: &Request<B>, gateway_origin: &GatewayUri) -> O
 #[cfg(test)]
 mod test {
     use http::Uri;
-    use hyper::Request;
-    use once_cell::sync::Lazy;
+    use once_cell::sync::{Lazy, OnceCell};
+    use tracing_subscriber::{self, EnvFilter, FmtSubscriber};
 
     use super::*;
 
     static GATEWAY_ORIGIN: Lazy<GatewayUri> =
         Lazy::new(|| GatewayUri::new(Uri::from_static("https://0.0.0.0")).unwrap());
+    static INIT: OnceCell<()> = OnceCell::new();
 
     #[test]
     fn mismatched_gateways_not_allowed() {
+        init_tracing();
         let not_gateway_origin = "https://0.0.0.0:4433";
         let req = hyper::Request::builder().uri(not_gateway_origin).body(()).unwrap();
         let allowable_gateway = find_allowable_gateway(&req, &*GATEWAY_ORIGIN);
@@ -78,8 +88,21 @@ mod test {
 
     #[test]
     fn matched_gateways_allowed() {
+        init_tracing();
         // ensure GatewayUri port is defined automatically
         let req = Request::builder().uri("https://0.0.0.0:443").body(()).unwrap();
         assert!(find_allowable_gateway(&req, &*GATEWAY_ORIGIN).is_some());
+    }
+
+    fn init_tracing() {
+        INIT.get_or_init(|| {
+            let subscriber = FmtSubscriber::builder()
+                .with_env_filter(EnvFilter::from_default_env())
+                .with_test_writer()
+                .finish();
+
+            tracing::subscriber::set_global_default(subscriber)
+                .expect("failed to set global default subscriber");
+        });
     }
 }

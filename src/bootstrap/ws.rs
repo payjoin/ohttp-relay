@@ -13,6 +13,7 @@ use hyper_tungstenite::HyperWebsocket;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_tungstenite::{tungstenite, WebSocketStream};
+use tracing::{error, instrument};
 
 use crate::error::Error;
 use crate::gateway_uri::GatewayUri;
@@ -22,6 +23,7 @@ pub(crate) fn is_websocket_request(req: &Request<Incoming>) -> bool {
     hyper_tungstenite::is_upgrade_request(req)
 }
 
+#[instrument]
 pub(crate) async fn try_upgrade(
     req: &mut Request<Incoming>,
     gateway_origin: Arc<GatewayUri>,
@@ -31,7 +33,7 @@ pub(crate) async fn try_upgrade(
     let gateway_addr = uri_to_addr(&gateway_origin).ok_or(Error::InternalServerError)?;
     tokio::spawn(async move {
         if let Err(e) = serve_websocket(websocket, gateway_addr).await {
-            eprintln!("Error in websocket connection: {e}");
+            error!("Error in websocket connection: {e}");
         }
     });
     let (parts, body) = res.into_parts();
@@ -40,6 +42,7 @@ pub(crate) async fn try_upgrade(
 }
 
 /// Stream WebSocket frames from the client to the gateway server's TCP socket and vice versa.
+#[instrument]
 async fn serve_websocket(
     websocket: HyperWebsocket,
     gateway_addr: SocketAddr,
