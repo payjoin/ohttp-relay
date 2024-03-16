@@ -68,7 +68,6 @@ where
 #[cfg(test)]
 mod test {
     use http::Uri;
-    use hyper::Request;
     use once_cell::sync::{Lazy, OnceCell};
     use tracing_subscriber::{self, EnvFilter, FmtSubscriber};
 
