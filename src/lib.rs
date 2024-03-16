@@ -18,7 +18,7 @@ use once_cell::sync::Lazy;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, UnixListener};
 use tokio_util::net::Listener;
-use tracing::{error, info, instrument};
+use tracing::{debug, error, info, instrument};
 
 pub mod error;
 mod gateway_uri;
@@ -159,18 +159,18 @@ async fn forward_request(req: Request<Incoming>) -> Result<Response<Incoming>, E
 
 #[instrument]
 pub(crate) fn uri_to_addr(uri: &Uri) -> Option<SocketAddr> {
-    let authority = uri.authority()?.as_str();
-    let parts: Vec<&str> = authority.split(':').collect();
-    let host = parts.first()?;
-    let port = parts.get(1).and_then(|p| p.parse::<u16>().ok());
+    let authority = uri.authority()?;
 
-    let default_port = match uri.scheme_str() {
-        Some("https") => 443,
-        _ => 80, // Default to 80 if it's not https or if the scheme is not specified
-    };
-
-    let addr_str = format!("{}:{}", host, port.unwrap_or(default_port));
-    addr_str.to_socket_addrs().ok()?.next()
+    let host = authority.host();
+    let port = authority.port_u16().or_else(|| {
+        match uri.scheme_str() {
+            Some("https") => Some(443),
+            _ => Some(80), // Default to 80 if it's not https or if the scheme is not specified
+        }
+    })?;
+    let addr = (host, port).to_socket_addrs().ok()?.next()?;
+    debug!("Resolved address: {:?}", addr);
+    Some(addr)
 }
 
 pub(crate) fn empty() -> BoxBody<Bytes, hyper::Error> {
