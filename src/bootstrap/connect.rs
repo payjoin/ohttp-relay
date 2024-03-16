@@ -8,7 +8,7 @@ use hyper::upgrade::Upgraded;
 use hyper::{Method, Request, Response};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpStream;
-use tracing::{error, instrument};
+use tracing::{debug, error, instrument};
 
 use crate::error::Error;
 use crate::{empty, uri_to_addr, GatewayUri};
@@ -58,7 +58,9 @@ fn find_allowable_gateway<B>(req: &Request<B>, gateway_origin: &GatewayUri) -> O
 where
     B: Debug,
 {
+    debug!("req: {:?}, gateway_origin: {:?}", req, gateway_origin);
     if req.uri().authority() != gateway_origin.authority() {
+        debug!("CONNECT request to non-gateway authority: {:?}", req.uri());
         return None;
     }
 
