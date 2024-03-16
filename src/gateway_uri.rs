@@ -1,6 +1,7 @@
 use http::Uri;
 
 /// A normalized gateway origin URI with a default port if none is specified.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayUri(Uri);
 
 impl GatewayUri {

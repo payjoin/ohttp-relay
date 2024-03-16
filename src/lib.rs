@@ -18,6 +18,7 @@ use once_cell::sync::Lazy;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, UnixListener};
 use tokio_util::net::Listener;
+use tracing::{error, info, instrument};
 
 pub mod error;
 mod gateway_uri;
@@ -32,6 +33,7 @@ pub static OHTTP_RELAY_HOST: Lazy<HeaderValue> =
 pub static EXPECTED_MEDIA_TYPE: Lazy<HeaderValue> =
     Lazy::new(|| HeaderValue::from_str("message/ohttp-req").expect("Invalid HeaderValue"));
 
+#[instrument]
 pub async fn listen_tcp(
     port: u16,
     gateway_origin: Uri,
@@ -42,15 +44,17 @@ pub async fn listen_tcp(
     ohttp_relay(listener, gateway_origin).await
 }
 
+#[instrument]
 pub async fn listen_socket(
     socket_path: &str,
     gateway_origin: Uri,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = UnixListener::bind(socket_path)?;
-    println!("OHTTP relay listening on socket: {}", socket_path);
+    info!("OHTTP relay listening on socket: {}", socket_path);
     ohttp_relay(listener, gateway_origin).await
 }
 
+#[instrument(skip(listener))]
 async fn ohttp_relay<L>(
     mut listener: L,
     gateway_origin: Uri,
@@ -74,7 +78,7 @@ where
                 .with_upgrades()
                 .await
             {
-                println!("Error serving connection: {:?}", err);
+                error!("Error serving connection: {:?}", err);
             }
         });
     }
@@ -82,11 +86,11 @@ where
     Ok(())
 }
 
+#[instrument]
 async fn serve_ohttp_relay(
     req: Request<Incoming>,
     gateway_origin: Arc<GatewayUri>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
-    println!("req: {:?}", req);
     let res = match req.method() {
         &Method::POST => handle_ohttp_relay(req, &gateway_origin).await,
         #[cfg(any(feature = "connect-bootstrap", feature = "ws-bootstrap"))]
@@ -98,6 +102,7 @@ async fn serve_ohttp_relay(
     Ok(res)
 }
 
+#[instrument]
 async fn handle_ohttp_relay(
     req: Request<Incoming>,
     gateway_origin: &GatewayUri,
@@ -111,6 +116,7 @@ async fn handle_ohttp_relay(
 }
 
 /// Convert an incoming request into a request to forward to the target gateway server.
+#[instrument]
 fn into_forward_req(
     mut req: Request<Incoming>,
     gateway_origin: &Uri,
@@ -143,6 +149,7 @@ fn into_forward_req(
     Ok(req)
 }
 
+#[instrument]
 async fn forward_request(req: Request<Incoming>) -> Result<Response<Incoming>, Error> {
     let https =
         HttpsConnectorBuilder::new().with_webpki_roots().https_or_http().enable_http1().build();
@@ -150,6 +157,7 @@ async fn forward_request(req: Request<Incoming>) -> Result<Response<Incoming>, E
     client.request(req).await.map_err(|_| Error::BadGateway)
 }
 
+#[instrument]
 pub(crate) fn uri_to_addr(uri: &Uri) -> Option<SocketAddr> {
     let authority = uri.authority()?.as_str();
     let parts: Vec<&str> = authority.split(':').collect();

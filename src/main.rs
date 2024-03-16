@@ -2,9 +2,13 @@ use std::str::FromStr;
 
 use http::Uri;
 use ohttp_relay::DEFAULT_PORT;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{fmt, EnvFilter};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    init_tracing();
     let port_env = std::env::var("PORT");
     let unix_socket_env = std::env::var("UNIX_SOCKET");
     let gateway_origin_str = std::env::var("GATEWAY_ORIGIN").expect("GATEWAY_ORIGIN is required");
@@ -24,4 +28,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     Ok(())
+}
+
+fn init_tracing() {
+    tracing_subscriber::registry()
+        .with(EnvFilter::from_default_env())
+        .with(fmt::layer().with_target(true)) // Log the target (usually the module path and function name)
+        .init();
 }
