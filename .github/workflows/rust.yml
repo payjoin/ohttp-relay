@@ -32,6 +32,7 @@ jobs:
         if: matrix.rust == '1.63.0'
         run: |
           cargo update
+          cargo update -p regex --precise 1.9.6
           cargo update -p time@0.3.34 --precise 0.3.20
       - name: test ohttp-relay
         run: cargo test --verbose --all-features
