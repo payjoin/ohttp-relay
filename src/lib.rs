@@ -91,16 +91,20 @@ async fn serve_ohttp_relay(
     req: Request<Incoming>,
     gateway_origin: Arc<GatewayUri>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
-    let res = match req.method() {
-        &Method::POST => handle_ohttp_relay(req, &gateway_origin).await,
+    let path = req.uri().path();
+    let res = match (req.method(), path) {
+        (&Method::GET, "/health") => Ok(health_check().await),
+        (&Method::POST, _) => handle_ohttp_relay(req, &gateway_origin).await,
         #[cfg(any(feature = "connect-bootstrap", feature = "ws-bootstrap"))]
-        &Method::CONNECT | &Method::GET =>
+        (&Method::CONNECT, _) | (&Method::GET, _) =>
             crate::bootstrap::handle_ohttp_keys(req, gateway_origin).await,
         _ => Err(Error::NotFound),
     }
     .unwrap_or_else(|e| e.to_response());
     Ok(res)
 }
+
+async fn health_check() -> Response<BoxBody<Bytes, hyper::Error>> { Response::new(empty()) }
 
 #[instrument]
 async fn handle_ohttp_relay(
