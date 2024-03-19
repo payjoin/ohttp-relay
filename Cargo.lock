@@ -554,7 +554,7 @@ dependencies = [
 
 [[package]]
 name = "ohttp-relay"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "futures",
  "hex-conservative",
