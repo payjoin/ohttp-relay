@@ -1,6 +1,7 @@
 use http_body_util::combinators::BoxBody;
 use http_body_util::BodyExt;
 use hyper::body::Bytes;
+use hyper::header::{HeaderValue, ACCESS_CONTROL_ALLOW_ORIGIN};
 use hyper::{Response, StatusCode};
 
 use crate::{empty, full};
@@ -30,7 +31,6 @@ impl Error {
             Self::NotFound => *res.status_mut() = StatusCode::NOT_FOUND,
             Self::InternalServerError => *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR,
         };
-
         res
     }
 }
