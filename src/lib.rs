@@ -7,7 +7,10 @@ use http::Uri;
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::{Bytes, Incoming};
-use hyper::header::{HeaderValue, CONTENT_LENGTH, CONTENT_TYPE, HOST};
+use hyper::header::{
+    HeaderValue, ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS,
+    ACCESS_CONTROL_ALLOW_ORIGIN, CONTENT_LENGTH, CONTENT_TYPE, HOST,
+};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response};
@@ -92,7 +95,8 @@ async fn serve_ohttp_relay(
     gateway_origin: Arc<GatewayUri>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
     let path = req.uri().path();
-    let res = match (req.method(), path) {
+    let mut res = match (req.method(), path) {
+        (&Method::OPTIONS, _) => Ok(handle_preflight()),
         (&Method::GET, "/health") => Ok(health_check().await),
         (&Method::POST, _) => handle_ohttp_relay(req, &gateway_origin).await,
         #[cfg(any(feature = "connect-bootstrap", feature = "ws-bootstrap"))]
@@ -101,7 +105,23 @@ async fn serve_ohttp_relay(
         _ => Err(Error::NotFound),
     }
     .unwrap_or_else(|e| e.to_response());
+    res.headers_mut().insert(ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
     Ok(res)
+}
+
+fn handle_preflight() -> Response<BoxBody<Bytes, hyper::Error>> {
+    let mut res = Response::new(empty());
+    *res.status_mut() = hyper::StatusCode::NO_CONTENT;
+    res.headers_mut().insert(ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
+    res.headers_mut().insert(
+        ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_static("CONNECT, GET, OPTIONS, POST"),
+    );
+    res.headers_mut().insert(
+        ACCESS_CONTROL_ALLOW_HEADERS,
+        HeaderValue::from_static("Content-Type, Content-Length"),
+    );
+    res
 }
 
 async fn health_check() -> Response<BoxBody<Bytes, hyper::Error>> { Response::new(empty()) }
