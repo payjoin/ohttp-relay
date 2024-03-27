@@ -7,13 +7,13 @@ use hyper::{Response, StatusCode};
 use crate::{empty, full};
 
 #[derive(Debug)]
+#[allow(clippy::enum_variant_names)]
 pub(crate) enum Error {
     BadGateway,
     MethodNotAllowed,
     UnsupportedMediaType,
     BadRequest(String),
     NotFound,
-    #[allow(clippy::enum_variant_names)]
     InternalServerError,
 }
 
