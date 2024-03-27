@@ -1,19 +1,18 @@
 use http_body_util::combinators::BoxBody;
 use http_body_util::BodyExt;
 use hyper::body::Bytes;
-use hyper::header::{HeaderValue, ACCESS_CONTROL_ALLOW_ORIGIN};
 use hyper::{Response, StatusCode};
 
 use crate::{empty, full};
 
 #[derive(Debug)]
+#[allow(clippy::enum_variant_names)]
 pub(crate) enum Error {
     BadGateway,
     MethodNotAllowed,
     UnsupportedMediaType,
     BadRequest(String),
     NotFound,
-    #[allow(clippy::enum_variant_names)]
     InternalServerError,
 }
 
