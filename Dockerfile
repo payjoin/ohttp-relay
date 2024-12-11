@@ -1,5 +1,5 @@
 # Stage 1: Building the binary
-FROM nixos/nix:2.20.5 as builder
+FROM nixos/nix:2.20.5 AS builder
 
 # Copy our source and setup our working dir.
 COPY . /tmp/build
