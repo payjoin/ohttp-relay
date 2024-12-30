@@ -41,5 +41,5 @@ rcgen = "0.12"
 tempfile = "3"
 tokio = { version = "1", features = ["process"] }
 tokio-rustls = "0.25"
-ureq = "2"
+ureq = "=2.9.6"
 uuid = { version = "0.8", features = ["v4"] }
