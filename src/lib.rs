@@ -37,7 +37,10 @@ pub static EXPECTED_MEDIA_TYPE: Lazy<HeaderValue> =
     Lazy::new(|| HeaderValue::from_str("message/ohttp-req").expect("Invalid HeaderValue"));
 
 #[instrument]
-pub async fn listen_tcp(port: u16, gateway_origin: Uri) -> Result<(), BoxError> {
+pub async fn listen_tcp(
+    port: u16,
+    gateway_origin: Uri,
+) -> Result<tokio::task::JoinHandle<Result<(), BoxError>>, BoxError> {
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(addr).await?;
     println!("OHTTP relay listening on tcp://{}", addr);
@@ -45,39 +48,59 @@ pub async fn listen_tcp(port: u16, gateway_origin: Uri) -> Result<(), BoxError> 
 }
 
 #[instrument]
-pub async fn listen_socket(socket_path: &str, gateway_origin: Uri) -> Result<(), BoxError> {
+pub async fn listen_socket(
+    socket_path: &str,
+    gateway_origin: Uri,
+) -> Result<tokio::task::JoinHandle<Result<(), BoxError>>, BoxError> {
     let listener = UnixListener::bind(socket_path)?;
     info!("OHTTP relay listening on socket: {}", socket_path);
     ohttp_relay(listener, gateway_origin).await
 }
 
+#[cfg(feature = "_test-util")]
+pub async fn listen_tcp_on_free_port(
+    gateway_origin: Uri,
+) -> Result<(u16, tokio::task::JoinHandle<Result<(), BoxError>>), BoxError> {
+    let listener = tokio::net::TcpListener::bind("[::]:0").await?;
+    let port = listener.local_addr()?.port();
+    println!("Directory server binding to port {}", listener.local_addr()?);
+    let handle = ohttp_relay(listener, gateway_origin).await?;
+    Ok((port, handle))
+}
+
 #[instrument(skip(listener))]
-async fn ohttp_relay<L>(mut listener: L, gateway_origin: Uri) -> Result<(), BoxError>
+async fn ohttp_relay<L>(
+    mut listener: L,
+    gateway_origin: Uri,
+) -> Result<tokio::task::JoinHandle<Result<(), BoxError>>, BoxError>
 where
-    L: Listener + Unpin,
+    L: Listener + Unpin + Send + 'static,
     L::Io: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let gateway_origin = GatewayUri::new(gateway_origin)?;
     let gateway_origin: Arc<GatewayUri> = Arc::new(gateway_origin);
 
-    while let Ok((stream, _)) = listener.accept().await {
-        let gateway_origin = gateway_origin.clone();
-        let io = TokioIo::new(stream);
-        tokio::spawn(async move {
-            if let Err(err) = http1::Builder::new()
-                .serve_connection(
-                    io,
-                    service_fn(move |req| serve_ohttp_relay(req, gateway_origin.clone())),
-                )
-                .with_upgrades()
-                .await
-            {
-                error!("Error serving connection: {:?}", err);
-            }
-        });
-    }
+    let handle = tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let gateway_origin = gateway_origin.clone();
+            let io = TokioIo::new(stream);
+            tokio::spawn(async move {
+                if let Err(err) = http1::Builder::new()
+                    .serve_connection(
+                        io,
+                        service_fn(move |req| serve_ohttp_relay(req, gateway_origin.clone())),
+                    )
+                    .with_upgrades()
+                    .await
+                {
+                    error!("Error serving connection: {:?}", err);
+                }
+            });
+        }
+        Ok(())
+    });
 
-    Ok(())
+    Ok(handle)
 }
 
 #[instrument]

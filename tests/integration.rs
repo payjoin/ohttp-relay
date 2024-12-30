@@ -1,4 +1,5 @@
 #[cfg(test)]
+#[cfg(feature = "_test-util")]
 mod integration {
     use std::fs::File;
     use std::io::Read;
@@ -34,7 +35,13 @@ mod integration {
     async fn test_request_response_tcp() {
         let gateway_port = find_free_port();
         let gateway = Uri::from_str(&format!("http://0.0.0.0:{}", gateway_port)).unwrap();
-        let relay_port = find_free_port();
+        let (relay_port, relay_handle) =
+            listen_tcp_on_free_port(gateway).await.expect("Failed to listen on free port");
+        let relay_task = tokio::spawn(async move {
+            if let Err(e) = relay_handle.await {
+                eprintln!("Relay failed: {}", e);
+            }
+        });
         let n_http_port = find_free_port();
         let n_https_port = find_free_port();
         let nginx_cert = gen_localhost_cert();
@@ -46,7 +53,7 @@ mod integration {
             _ = example_gateway_http(gateway_port) => {
                 assert!(false, "Gateway is long running");
             }
-            _ = listen_tcp(relay_port, gateway) => {
+            _ = relay_task => {
                 assert!(false, "Relay is long running");
             }
             _ = ohttp_req(n_https_port, nginx_cert_der) => {}
@@ -67,6 +74,13 @@ mod integration {
         let nginx_cert = gen_localhost_cert();
         let nginx_cert_der = cert_to_cert_der(&nginx_cert);
         let socket_path_str = socket_path.to_str().unwrap();
+        let relay_handle =
+            listen_socket(socket_path_str, gateway).await.expect("Failed to listen on socket");
+        let relay_task = tokio::spawn(async move {
+            if let Err(e) = relay_handle.await {
+                eprintln!("Relay failed: {}", e);
+            }
+        });
         let n_http_port = find_free_port();
         let n_https_port = find_free_port();
         let _nginx =
@@ -76,7 +90,7 @@ mod integration {
             _ = example_gateway_http(gateway_port) => {
                 assert!(false, "Gateway is long running");
             }
-            _ = listen_socket(socket_path_str, gateway) => {
+            _ = relay_task => {
                 assert!(false, "Relay is long running");
             }
             _ = ohttp_req(n_https_port, nginx_cert_der) => {}
@@ -286,10 +300,16 @@ mod integration {
         {
             let gateway_port = find_free_port();
             let gateway = Uri::from_str(&format!("http://0.0.0.0:{}", gateway_port)).unwrap();
-            let relay_port = find_free_port();
             let nginx_cert = gen_localhost_cert();
             let gateway_cert = gen_localhost_cert();
             let gateway_cert_der = cert_to_cert_der(&gateway_cert);
+            let (relay_port, relay_handle) =
+                listen_tcp_on_free_port(gateway).await.expect("Failed to listen on free port");
+            let relay_task = tokio::spawn(async move {
+                if let Err(e) = relay_handle.await {
+                    eprintln!("Relay failed: {}", e);
+                }
+            });
             let n_http_port = find_free_port();
             let n_https_port = find_free_port();
             let _nginx = start_nginx(
@@ -303,7 +323,7 @@ mod integration {
                 _ = example_gateway_https(gateway_port, gateway_cert) => {
                     assert!(false, "Gateway is long running");
                 }
-                _ = listen_tcp(relay_port, gateway) => {
+                _ = relay_task => {
                     assert!(false, "Relay is long running");
                 }
                 _ = client_fn(n_http_port, gateway_port, gateway_cert_der) => {}

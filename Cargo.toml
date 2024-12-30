@@ -18,6 +18,7 @@ default = ["bootstrap"]
 bootstrap = ["connect-bootstrap", "ws-bootstrap"]
 connect-bootstrap = []
 ws-bootstrap = ["futures", "hyper-tungstenite", "rustls", "tokio-tungstenite"]
+_test-util = []
 
 [dependencies]
 futures = { version = "0.3", optional = true }
