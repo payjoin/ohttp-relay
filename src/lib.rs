@@ -25,7 +25,7 @@ use tracing::{debug, error, info, instrument};
 
 pub mod error;
 mod gateway_uri;
-use crate::error::Error;
+use crate::error::{BoxError, Error};
 
 #[cfg(any(feature = "connect-bootstrap", feature = "ws-bootstrap"))]
 pub mod bootstrap;
@@ -37,10 +37,7 @@ pub static EXPECTED_MEDIA_TYPE: Lazy<HeaderValue> =
     Lazy::new(|| HeaderValue::from_str("message/ohttp-req").expect("Invalid HeaderValue"));
 
 #[instrument]
-pub async fn listen_tcp(
-    port: u16,
-    gateway_origin: Uri,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub async fn listen_tcp(port: u16, gateway_origin: Uri) -> Result<(), BoxError> {
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(addr).await?;
     println!("OHTTP relay listening on tcp://{}", addr);
@@ -48,20 +45,14 @@ pub async fn listen_tcp(
 }
 
 #[instrument]
-pub async fn listen_socket(
-    socket_path: &str,
-    gateway_origin: Uri,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub async fn listen_socket(socket_path: &str, gateway_origin: Uri) -> Result<(), BoxError> {
     let listener = UnixListener::bind(socket_path)?;
     info!("OHTTP relay listening on socket: {}", socket_path);
     ohttp_relay(listener, gateway_origin).await
 }
 
 #[instrument(skip(listener))]
-async fn ohttp_relay<L>(
-    mut listener: L,
-    gateway_origin: Uri,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+async fn ohttp_relay<L>(mut listener: L, gateway_origin: Uri) -> Result<(), BoxError>
 where
     L: Listener + Unpin,
     L::Io: AsyncRead + AsyncWrite + Unpin + Send + 'static,

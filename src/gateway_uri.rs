@@ -1,11 +1,12 @@
 use http::Uri;
 
+use crate::error::BoxError;
 /// A normalized gateway origin URI with a default port if none is specified.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayUri(Uri);
 
 impl GatewayUri {
-    pub fn new(mut gateway_origin: Uri) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    pub fn new(mut gateway_origin: Uri) -> Result<Self, BoxError> {
         let (scheme, default_port) = match gateway_origin.scheme_str() {
             Some("http") => ("http", 80),
             Some("https") | None => ("https", 443),
