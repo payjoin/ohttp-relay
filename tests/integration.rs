@@ -454,6 +454,15 @@ mod integration {
             .spawn()
             .expect("Failed to start nginx");
 
+        let start = std::time::Instant::now();
+        let timeout = std::time::Duration::from_secs(5);
+        while start.elapsed() < timeout {
+            if let Ok(_) = std::net::TcpStream::connect(format!("127.0.0.1:{}", n_https_port)) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
         // Keep the config file open as long as NGINX is using it
         std::mem::forget(config_file);
 
