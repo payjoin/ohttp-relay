@@ -61,7 +61,7 @@ mod integration {
     }
 
     #[tokio::test]
-    async fn test_request_response_socket() {
+    async fn test_request_response_socket() -> Result<(), Box<dyn std::error::Error>> {
         let temp_dir = std::env::temp_dir();
         let socket_path = temp_dir.as_path().join("test.socket");
 
@@ -85,7 +85,7 @@ mod integration {
         let n_https_port = find_free_port();
         let _nginx =
             start_nginx(n_http_port, n_https_port, format!("unix:{}", socket_path_str), nginx_cert)
-                .await;
+                .await?;
         tokio::select! {
             _ = example_gateway_http(gateway_port) => {
                 assert!(false, "Gateway is long running");
@@ -95,6 +95,7 @@ mod integration {
             }
             _ = ohttp_req(n_https_port, nginx_cert_der) => {}
         }
+        Ok(())
     }
 
     async fn example_gateway_http(port: u16) -> Result<(), Box<dyn std::error::Error>> {
@@ -410,7 +411,7 @@ mod integration {
         n_https_port: u16,
         proxy_pass: String,
         cert: Certificate,
-    ) -> NginxProcess {
+    ) -> Result<NginxProcess, Box<dyn std::error::Error>> {
         use std::io::Write;
 
         let temp_dir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".into()); // Use Nix's TMPDIR
@@ -454,19 +455,22 @@ mod integration {
             .spawn()
             .expect("Failed to start nginx");
 
-        let start = std::time::Instant::now();
         let timeout = std::time::Duration::from_secs(5);
-        while start.elapsed() < timeout {
-            if let Ok(_) = std::net::TcpStream::connect(format!("127.0.0.1:{}", n_https_port)) {
-                break;
+        let start_time = std::time::Instant::now();
+        loop {
+            match tokio::net::TcpStream::connect(format!("127.0.0.1:{}", n_https_port)).await {
+                Ok(_) => break,
+                Err(_) if start_time.elapsed() < timeout => {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                Err(e) => return Err(Box::new(e)),
             }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
 
         // Keep the config file open as long as NGINX is using it
         std::mem::forget(config_file);
 
-        NginxProcess { _child, config_path }
+        Ok(NginxProcess { _child, config_path })
     }
 
     fn full<T: Into<Bytes>>(chunk: T) -> BoxBody<Bytes, hyper::Error> {
