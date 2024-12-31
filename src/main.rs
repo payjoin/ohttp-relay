@@ -26,8 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
         (Err(_), Err(_)) => ohttp_relay::listen_tcp(DEFAULT_PORT, gateway_origin).await?,
     }
-
-    Ok(())
+    .await?
 }
 
 fn init_tracing() {

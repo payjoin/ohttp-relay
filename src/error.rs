@@ -5,6 +5,8 @@ use hyper::{Response, StatusCode};
 
 use crate::{empty, full};
 
+pub(crate) type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
 #[derive(Debug)]
 #[allow(clippy::enum_variant_names)]
 pub(crate) enum Error {
