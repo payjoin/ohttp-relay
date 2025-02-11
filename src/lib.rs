@@ -176,8 +176,22 @@ fn into_forward_req(
 
 #[instrument]
 async fn forward_request(req: Request<Incoming>) -> Result<Response<Incoming>, Error> {
-    let https =
-        HttpsConnectorBuilder::new().with_webpki_roots().https_or_http().enable_http1().build();
+    #[cfg(not(feature = "_test-util"))]
+    let builder = HttpsConnectorBuilder::new().with_webpki_roots();
+
+    // During testing we require self signed certificates, so if SSL_CERT_FILE
+    // is explicitly set under such builds, parse root certificates from the
+    // specified PEM file
+    #[cfg(feature = "_test-util")]
+    let builder = if std::env::var("SSL_CERT_FILE").is_ok() {
+        HttpsConnectorBuilder::new()
+            .with_native_roots()
+            .expect("SSL_CERT_FILE provided certificates must load")
+    } else {
+        HttpsConnectorBuilder::new().with_webpki_roots()
+    };
+
+    let https = builder.https_or_http().enable_http1().build();
     let client = Client::builder(TokioExecutor::new()).build(https);
     client.request(req).await.map_err(|_| Error::BadGateway)
 }
