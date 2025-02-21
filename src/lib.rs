@@ -2,7 +2,6 @@ use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 
 use gateway_uri::GatewayUri;
-use http::uri::PathAndQuery;
 use http::Uri;
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Empty, Full};
@@ -112,7 +111,7 @@ async fn serve_ohttp_relay(
     let mut res = match (req.method(), path) {
         (&Method::OPTIONS, _) => Ok(handle_preflight()),
         (&Method::GET, "/health") => Ok(health_check().await),
-        (&Method::POST, _) => handle_ohttp_relay(req, &gateway_origin).await,
+        (&Method::POST, "/") => handle_ohttp_relay(req, &gateway_origin).await,
         #[cfg(any(feature = "connect-bootstrap", feature = "ws-bootstrap"))]
         (&Method::CONNECT, _) | (&Method::GET, _) =>
             crate::bootstrap::handle_ohttp_keys(req, gateway_origin).await,
@@ -173,17 +172,20 @@ fn into_forward_req(
         req.headers_mut().insert(CONTENT_LENGTH, content_length);
     }
 
-    let req_path_and_query =
-        req.uri().path_and_query().map_or_else(|| PathAndQuery::from_static("/"), |pq| pq.clone());
+    if let Some(path) = req.uri().path_and_query() {
+        if path != "/" {
+            return Err(Error::NotFound);
+        }
+    }
 
     *req.uri_mut() = Uri::builder()
         .scheme(gateway_origin.scheme_str().unwrap_or("https"))
         .authority(
             gateway_origin.authority().expect("Gateway origin must have an authority").as_str(),
         )
-        .path_and_query(req_path_and_query.as_str())
+        .path_and_query("/")
         .build()
-        .map_err(|_| Error::BadRequest("Invalid target uri".to_owned()))?;
+        .map_err(|_| Error::BadRequest("Invalid gateway uri".to_owned()))?;
     Ok(req)
 }
 
