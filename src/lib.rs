@@ -183,7 +183,7 @@ fn into_forward_req(
         .authority(
             gateway_origin.authority().expect("Gateway origin must have an authority").as_str(),
         )
-        .path_and_query("/")
+        .path_and_query("/.well-known/ohttp-gateway")
         .build()
         .map_err(|_| Error::BadRequest("Invalid gateway uri".to_owned()))?;
     Ok(req)
