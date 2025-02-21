@@ -120,11 +120,12 @@ mod integration {
     async fn handle_gateway(
         req: Request<Incoming>,
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
-        let res = match req.uri().path() {
-            "/" => handle_ohttp_req(req).await,
+        let res = match (req.method(), req.uri().path()) {
+            (&hyper::Method::POST, "/.well-known/ohttp-gateway") => handle_ohttp_req(req).await,
             #[cfg(any(feature = "connect-bootstrap", feature = "ws-bootstrap"))]
-            "/ohttp-keys" => bootstrap::handle_ohttp_keys(req).await,
-            _ => panic!("Unexpected request"),
+            (&hyper::Method::GET, "/.well-known/ohttp-gateway") =>
+                bootstrap::handle_ohttp_keys(req).await,
+            _ => panic!("Unexpected request: {} {}", req.method(), req.uri().path()),
         }
         .unwrap();
         Ok(res)
@@ -249,7 +250,7 @@ mod integration {
                 let mut tls_stream = connector.connect(domain, ws_io).await.unwrap();
 
                 let content =
-                    b"GET /ohttp-keys HTTP/1.1\r\nHost: 0.0.0.0\r\nConnection: close\r\n\r\n";
+                    b"GET /.well-known/ohttp-gateway HTTP/1.1\r\nHost: 0.0.0.0\r\nConnection: close\r\n\r\n";
                 tls_stream.write_all(content).await.unwrap();
                 tls_stream.flush().await.unwrap();
                 let mut plaintext = Vec::new();
@@ -288,7 +289,10 @@ mod integration {
                     ureq::AgentBuilder::new().tls_config(Arc::new(config)).proxy(proxy).build();
                 let res = tokio::task::spawn_blocking(move || {
                     https
-                        .get(format!("https://0.0.0.0:{}/ohttp-keys", gateway_port).as_str())
+                        .get(
+                            format!("https://0.0.0.0:{}/.well-known/ohttp-gateway", gateway_port)
+                                .as_str(),
+                        )
                         .call()
                         .unwrap()
                 })

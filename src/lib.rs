@@ -221,7 +221,8 @@ fn into_forward_req(
         }
     }
 
-    *req.uri_mut() = gateway_origin.to_uri();
+    *req.uri_mut() = gateway_origin.rfc_9540_url();
+
     Ok(req)
 }
 
