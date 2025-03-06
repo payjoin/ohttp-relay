@@ -1,7 +1,11 @@
+use std::time::Duration;
+
 use http_body_util::combinators::BoxBody;
 use http_body_util::BodyExt;
 use hyper::body::Bytes;
+use hyper::header::{HeaderValue, RETRY_AFTER};
 use hyper::{Response, StatusCode};
+use tracing::error;
 
 use crate::{empty, full};
 
@@ -15,7 +19,8 @@ pub(crate) enum Error {
     UnsupportedMediaType,
     BadRequest(String),
     NotFound,
-    InternalServerError,
+    InternalServerError(BoxError),
+    Unavailable(Duration),
 }
 
 impl Error {
@@ -30,7 +35,18 @@ impl Error {
                 *res.body_mut() = full(e.to_string()).boxed();
             }
             Self::NotFound => *res.status_mut() = StatusCode::NOT_FOUND,
-            Self::InternalServerError => *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR,
+            Self::InternalServerError(internal_error) => {
+                error!("Internal server error: {}", internal_error);
+                *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+            }
+            Self::Unavailable(max_age) => {
+                *res.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
+                res.headers_mut().append(
+                    RETRY_AFTER,
+                    HeaderValue::from_str(&max_age.as_secs().to_string())
+                        .expect("header value should always be valid"),
+                );
+            }
         };
         res
     }
@@ -44,7 +60,8 @@ impl std::fmt::Display for Error {
             Self::MethodNotAllowed => write!(f, "Method not allowed"),
             Self::BadRequest(e) => write!(f, "Bad request: {}", e),
             Self::NotFound => write!(f, "Not found"),
-            Self::InternalServerError => write!(f, "Internal server error"),
+            Self::InternalServerError(e) => write!(f, "Internal server error: {}", e),
+            Self::Unavailable(_) => write!(f, "Service unavailable"),
         }
     }
 }

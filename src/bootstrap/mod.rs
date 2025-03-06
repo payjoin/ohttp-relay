@@ -15,7 +15,7 @@ pub mod ws;
 #[instrument]
 pub(crate) async fn handle_ohttp_keys(
     mut req: Request<Incoming>,
-    gateway_origin: &GatewayUri,
+    gateway_origin: GatewayUri,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Error> {
     #[cfg(feature = "connect-bootstrap")]
     if connect::is_connect_request(&req) {
