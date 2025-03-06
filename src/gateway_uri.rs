@@ -6,9 +6,10 @@ use http::Uri;
 use crate::error::BoxError;
 
 pub(crate) const RFC_9540_GATEWAY_PATH: &str = "/.well-known/ohttp-gateway";
+const ALLOWED_PURPOSES_PATH_AND_QUERY: &str = "/.well-known/ohttp-gateway?allowed_purposes";
 
 /// A normalized gateway origin URI with a default port if none is specified.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct GatewayUri {
     scheme: Scheme,
     authority: Authority,
@@ -57,6 +58,13 @@ impl GatewayUri {
     pub fn rfc_9540_url(&self) -> Uri {
         self.to_uri_builder()
             .path_and_query(RFC_9540_GATEWAY_PATH)
+            .build()
+            .expect("building RFC 9540 uri from scheme and authority must succeed")
+    }
+
+    pub fn probe_url(&self) -> Uri {
+        self.to_uri_builder()
+            .path_and_query(ALLOWED_PURPOSES_PATH_AND_QUERY)
             .build()
             .expect("building RFC 9540 uri from scheme and authority must succeed")
     }
