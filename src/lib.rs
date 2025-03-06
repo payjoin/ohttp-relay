@@ -23,6 +23,7 @@ use tokio_util::net::Listener;
 use tracing::{error, info, instrument};
 
 pub mod error;
+mod gateway_prober;
 mod gateway_uri;
 use crate::error::{BoxError, Error};
 
