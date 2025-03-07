@@ -8,7 +8,6 @@ mod integration {
     use std::str::FromStr;
 
     use hex::FromHex;
-    use http::Uri;
     use http_body_util::combinators::BoxBody;
     use http_body_util::{BodyExt, Full};
     use hyper::body::{Bytes, Incoming};
@@ -34,7 +33,7 @@ mod integration {
     #[tokio::test]
     async fn test_request_response_tcp() {
         let gateway_port = find_free_port();
-        let gateway = Uri::from_str(&format!("http://0.0.0.0:{}", gateway_port)).unwrap();
+        let gateway = GatewayUri::from_str(&format!("http://0.0.0.0:{}", gateway_port)).unwrap();
         let (relay_port, relay_handle) =
             listen_tcp_on_free_port(gateway).await.expect("Failed to listen on free port");
         let relay_task = tokio::spawn(async move {
@@ -70,7 +69,7 @@ mod integration {
         }
 
         let gateway_port = find_free_port();
-        let gateway = Uri::from_str(&format!("http://0.0.0.0:{}", gateway_port)).unwrap();
+        let gateway = GatewayUri::from_str(&format!("http://0.0.0.0:{}", gateway_port)).unwrap();
         let nginx_cert = gen_localhost_cert();
         let nginx_cert_der = cert_to_cert_der(&nginx_cert);
         let socket_path_str = socket_path.to_str().unwrap();
@@ -300,7 +299,8 @@ mod integration {
             F: FnOnce(u16, u16, CertificateDer<'static>) -> Pin<Box<dyn Future<Output = ()>>>,
         {
             let gateway_port = find_free_port();
-            let gateway = Uri::from_str(&format!("http://0.0.0.0:{}", gateway_port)).unwrap();
+            let gateway =
+                GatewayUri::from_str(&format!("http://0.0.0.0:{}", gateway_port)).unwrap();
             let nginx_cert = gen_localhost_cert();
             let gateway_cert = gen_localhost_cert();
             let gateway_cert_der = cert_to_cert_der(&gateway_cert);
