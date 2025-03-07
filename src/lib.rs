@@ -1,4 +1,4 @@
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use gateway_uri::GatewayUri;
@@ -20,7 +20,7 @@ use once_cell::sync::Lazy;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, UnixListener};
 use tokio_util::net::Listener;
-use tracing::{debug, error, info, instrument};
+use tracing::{error, info, instrument};
 
 pub mod error;
 mod gateway_uri;
@@ -76,7 +76,7 @@ where
     L: Listener + Unpin + Send + 'static,
     L::Io: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let gateway_origin = GatewayUri::new(gateway_origin)?;
+    let gateway_origin = GatewayUri::try_from(gateway_origin)?;
     let gateway_origin: Arc<GatewayUri> = Arc::new(gateway_origin);
 
     let handle = tokio::spawn(async move {
@@ -156,7 +156,7 @@ async fn handle_ohttp_relay(
 #[instrument]
 fn into_forward_req(
     mut req: Request<Incoming>,
-    gateway_origin: &Uri,
+    gateway_origin: &GatewayUri,
 ) -> Result<Request<Incoming>, Error> {
     if req.method() != hyper::Method::POST {
         return Err(Error::MethodNotAllowed);
@@ -178,14 +178,7 @@ fn into_forward_req(
         }
     }
 
-    *req.uri_mut() = Uri::builder()
-        .scheme(gateway_origin.scheme_str().unwrap_or("https"))
-        .authority(
-            gateway_origin.authority().expect("Gateway origin must have an authority").as_str(),
-        )
-        .path_and_query("/")
-        .build()
-        .map_err(|_| Error::BadRequest("Invalid gateway uri".to_owned()))?;
+    *req.uri_mut() = gateway_origin.to_uri();
     Ok(req)
 }
 
@@ -195,22 +188,6 @@ async fn forward_request(req: Request<Incoming>) -> Result<Response<Incoming>, E
         HttpsConnectorBuilder::new().with_webpki_roots().https_or_http().enable_http1().build();
     let client = Client::builder(TokioExecutor::new()).build(https);
     client.request(req).await.map_err(|_| Error::BadGateway)
-}
-
-#[instrument]
-pub(crate) fn uri_to_addr(uri: &Uri) -> Option<SocketAddr> {
-    let authority = uri.authority()?;
-
-    let host = authority.host();
-    let port = authority.port_u16().or_else(|| {
-        match uri.scheme_str() {
-            Some("https") => Some(443),
-            _ => Some(80), // Default to 80 if it's not https or if the scheme is not specified
-        }
-    })?;
-    let addr = (host, port).to_socket_addrs().ok()?.next()?;
-    debug!("Resolved address: {:?}", addr);
-    Some(addr)
 }
 
 pub(crate) fn empty() -> BoxBody<Bytes, hyper::Error> {
