@@ -646,7 +646,6 @@ dependencies = [
  "hyper-tungstenite",
  "hyper-util",
  "mockito",
- "once_cell",
  "rcgen",
  "rustls",
  "tempfile",
