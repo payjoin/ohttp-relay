@@ -1,6 +1,5 @@
 use std::fmt::Debug;
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 use http_body_util::combinators::BoxBody;
 use hyper::body::{Bytes, Incoming};
@@ -20,9 +19,9 @@ pub(crate) fn is_connect_request(req: &Request<Incoming>) -> bool {
 #[instrument]
 pub(crate) async fn try_upgrade(
     req: Request<Incoming>,
-    gateway_origin: Arc<GatewayUri>,
+    gateway_origin: &GatewayUri,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Error> {
-    if let Some(addr) = find_allowable_gateway(&req, &gateway_origin).await {
+    if let Some(addr) = find_allowable_gateway(&req, gateway_origin).await {
         tokio::task::spawn(async move {
             match hyper::upgrade::on(req).await {
                 Ok(upgraded) => {

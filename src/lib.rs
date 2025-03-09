@@ -80,10 +80,7 @@ where
             let io = TokioIo::new(stream);
             tokio::spawn(async move {
                 if let Err(err) = http1::Builder::new()
-                    .serve_connection(
-                        io,
-                        service_fn(move |req| serve_ohttp_relay(req, gateway_origin.clone())),
-                    )
+                    .serve_connection(io, service_fn(|req| serve_ohttp_relay(req, &gateway_origin)))
                     .with_upgrades()
                     .await
                 {
@@ -100,13 +97,13 @@ where
 #[instrument]
 async fn serve_ohttp_relay(
     req: Request<Incoming>,
-    gateway_origin: Arc<GatewayUri>,
+    gateway_origin: &GatewayUri,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
     let path = req.uri().path();
     let mut res = match (req.method(), path) {
         (&Method::OPTIONS, _) => Ok(handle_preflight()),
         (&Method::GET, "/health") => Ok(health_check().await),
-        (&Method::POST, "/") => handle_ohttp_relay(req, &gateway_origin).await,
+        (&Method::POST, "/") => handle_ohttp_relay(req, gateway_origin).await,
         #[cfg(any(feature = "connect-bootstrap", feature = "ws-bootstrap"))]
         (&Method::CONNECT, _) | (&Method::GET, _) =>
             crate::bootstrap::handle_ohttp_keys(req, gateway_origin).await,

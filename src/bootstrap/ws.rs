@@ -1,7 +1,6 @@
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures::{Sink, SinkExt, StreamExt};
@@ -25,7 +24,7 @@ pub(crate) fn is_websocket_request(req: &Request<Incoming>) -> bool {
 #[instrument]
 pub(crate) async fn try_upgrade(
     req: &mut Request<Incoming>,
-    gateway_origin: Arc<GatewayUri>,
+    gateway_origin: &GatewayUri,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Error> {
     let (res, websocket) = hyper_tungstenite::upgrade(req, None)
         .map_err(|e| Error::BadRequest(format!("Error upgrading to websocket: {}", e)))?;
