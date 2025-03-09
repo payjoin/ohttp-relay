@@ -1,7 +1,6 @@
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures::{Sink, SinkExt, StreamExt};
@@ -17,7 +16,6 @@ use tracing::{error, instrument};
 
 use crate::error::Error;
 use crate::gateway_uri::GatewayUri;
-use crate::uri_to_addr;
 
 pub(crate) fn is_websocket_request(req: &Request<Incoming>) -> bool {
     hyper_tungstenite::is_upgrade_request(req)
@@ -26,11 +24,11 @@ pub(crate) fn is_websocket_request(req: &Request<Incoming>) -> bool {
 #[instrument]
 pub(crate) async fn try_upgrade(
     req: &mut Request<Incoming>,
-    gateway_origin: Arc<GatewayUri>,
+    gateway_origin: &GatewayUri,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Error> {
     let (res, websocket) = hyper_tungstenite::upgrade(req, None)
         .map_err(|e| Error::BadRequest(format!("Error upgrading to websocket: {}", e)))?;
-    let gateway_addr = uri_to_addr(&gateway_origin).ok_or(Error::InternalServerError)?;
+    let gateway_addr = gateway_origin.to_socket_addr().await.ok_or(Error::InternalServerError)?;
     tokio::spawn(async move {
         if let Err(e) = serve_websocket(websocket, gateway_addr).await {
             error!("Error in websocket connection: {e}");

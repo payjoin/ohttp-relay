@@ -1,8 +1,7 @@
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::SocketAddr;
 use std::sync::Arc;
 
-use gateway_uri::GatewayUri;
-use http::Uri;
+pub use gateway_uri::GatewayUri;
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::{Bytes, Incoming};
@@ -19,7 +18,7 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, UnixListener};
 use tokio_util::net::Listener;
-use tracing::{debug, error, info, instrument};
+use tracing::{error, info, instrument};
 
 pub mod error;
 mod gateway_uri;
@@ -35,7 +34,7 @@ pub const EXPECTED_MEDIA_TYPE: HeaderValue = HeaderValue::from_static("message/o
 #[instrument]
 pub async fn listen_tcp(
     port: u16,
-    gateway_origin: Uri,
+    gateway_origin: GatewayUri,
 ) -> Result<tokio::task::JoinHandle<Result<(), BoxError>>, BoxError> {
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(addr).await?;
@@ -46,7 +45,7 @@ pub async fn listen_tcp(
 #[instrument]
 pub async fn listen_socket(
     socket_path: &str,
-    gateway_origin: Uri,
+    gateway_origin: GatewayUri,
 ) -> Result<tokio::task::JoinHandle<Result<(), BoxError>>, BoxError> {
     let listener = UnixListener::bind(socket_path)?;
     info!("OHTTP relay listening on socket: {}", socket_path);
@@ -55,7 +54,7 @@ pub async fn listen_socket(
 
 #[cfg(feature = "_test-util")]
 pub async fn listen_tcp_on_free_port(
-    gateway_origin: Uri,
+    gateway_origin: GatewayUri,
 ) -> Result<(u16, tokio::task::JoinHandle<Result<(), BoxError>>), BoxError> {
     let listener = tokio::net::TcpListener::bind("[::]:0").await?;
     let port = listener.local_addr()?.port();
@@ -67,13 +66,12 @@ pub async fn listen_tcp_on_free_port(
 #[instrument(skip(listener))]
 async fn ohttp_relay<L>(
     mut listener: L,
-    gateway_origin: Uri,
+    gateway_origin: GatewayUri,
 ) -> Result<tokio::task::JoinHandle<Result<(), BoxError>>, BoxError>
 where
     L: Listener + Unpin + Send + 'static,
     L::Io: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let gateway_origin = GatewayUri::new(gateway_origin)?;
     let gateway_origin: Arc<GatewayUri> = Arc::new(gateway_origin);
 
     let handle = tokio::spawn(async move {
@@ -82,10 +80,7 @@ where
             let io = TokioIo::new(stream);
             tokio::spawn(async move {
                 if let Err(err) = http1::Builder::new()
-                    .serve_connection(
-                        io,
-                        service_fn(move |req| serve_ohttp_relay(req, gateway_origin.clone())),
-                    )
+                    .serve_connection(io, service_fn(|req| serve_ohttp_relay(req, &gateway_origin)))
                     .with_upgrades()
                     .await
                 {
@@ -102,13 +97,13 @@ where
 #[instrument]
 async fn serve_ohttp_relay(
     req: Request<Incoming>,
-    gateway_origin: Arc<GatewayUri>,
+    gateway_origin: &GatewayUri,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
     let path = req.uri().path();
     let mut res = match (req.method(), path) {
         (&Method::OPTIONS, _) => Ok(handle_preflight()),
         (&Method::GET, "/health") => Ok(health_check().await),
-        (&Method::POST, "/") => handle_ohttp_relay(req, &gateway_origin).await,
+        (&Method::POST, "/") => handle_ohttp_relay(req, gateway_origin).await,
         #[cfg(any(feature = "connect-bootstrap", feature = "ws-bootstrap"))]
         (&Method::CONNECT, _) | (&Method::GET, _) =>
             crate::bootstrap::handle_ohttp_keys(req, gateway_origin).await,
@@ -153,7 +148,7 @@ async fn handle_ohttp_relay(
 #[instrument]
 fn into_forward_req(
     mut req: Request<Incoming>,
-    gateway_origin: &Uri,
+    gateway_origin: &GatewayUri,
 ) -> Result<Request<Incoming>, Error> {
     if req.method() != hyper::Method::POST {
         return Err(Error::MethodNotAllowed);
@@ -175,14 +170,7 @@ fn into_forward_req(
         }
     }
 
-    *req.uri_mut() = Uri::builder()
-        .scheme(gateway_origin.scheme_str().unwrap_or("https"))
-        .authority(
-            gateway_origin.authority().expect("Gateway origin must have an authority").as_str(),
-        )
-        .path_and_query("/")
-        .build()
-        .map_err(|_| Error::BadRequest("Invalid gateway uri".to_owned()))?;
+    *req.uri_mut() = gateway_origin.to_uri();
     Ok(req)
 }
 
@@ -192,22 +180,6 @@ async fn forward_request(req: Request<Incoming>) -> Result<Response<Incoming>, E
         HttpsConnectorBuilder::new().with_webpki_roots().https_or_http().enable_http1().build();
     let client = Client::builder(TokioExecutor::new()).build(https);
     client.request(req).await.map_err(|_| Error::BadGateway)
-}
-
-#[instrument]
-pub(crate) fn uri_to_addr(uri: &Uri) -> Option<SocketAddr> {
-    let authority = uri.authority()?;
-
-    let host = authority.host();
-    let port = authority.port_u16().or_else(|| {
-        match uri.scheme_str() {
-            Some("https") => Some(443),
-            _ => Some(80), // Default to 80 if it's not https or if the scheme is not specified
-        }
-    })?;
-    let addr = (host, port).to_socket_addrs().ok()?.next()?;
-    debug!("Resolved address: {:?}", addr);
-    Some(addr)
 }
 
 pub(crate) fn empty() -> BoxBody<Bytes, hyper::Error> {
