@@ -11,7 +11,7 @@ use tokio::net::TcpStream;
 use tracing::{debug, error, instrument};
 
 use crate::error::Error;
-use crate::{empty, uri_to_addr, GatewayUri};
+use crate::{empty, GatewayUri};
 
 pub(crate) fn is_connect_request(req: &Request<Incoming>) -> bool {
     Method::CONNECT == req.method()
@@ -22,7 +22,7 @@ pub(crate) async fn try_upgrade(
     req: Request<Incoming>,
     gateway_origin: Arc<GatewayUri>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Error> {
-    if let Some(addr) = find_allowable_gateway(&req, &gateway_origin) {
+    if let Some(addr) = find_allowable_gateway(&req, &gateway_origin).await {
         tokio::task::spawn(async move {
             match hyper::upgrade::on(req).await {
                 Ok(upgraded) => {
@@ -54,46 +54,48 @@ async fn tunnel(upgraded: Upgraded, addr: SocketAddr) -> std::io::Result<()> {
 /// This prevents the relay from being used as an arbitrary proxy
 /// to any host on the internet.
 #[instrument]
-fn find_allowable_gateway<B>(req: &Request<B>, gateway_origin: &GatewayUri) -> Option<SocketAddr>
+async fn find_allowable_gateway<B>(
+    req: &Request<B>,
+    gateway_origin: &GatewayUri,
+) -> Option<SocketAddr>
 where
     B: Debug,
 {
     debug!("req: {:?}, gateway_origin: {:?}", req, gateway_origin);
-    if req.uri().authority() != gateway_origin.authority() {
+    if req.uri().authority() != Some(gateway_origin.authority()) {
         debug!("CONNECT request to non-gateway authority: {:?}", req.uri());
         return None;
     }
 
-    uri_to_addr(gateway_origin)
+    gateway_origin.to_socket_addr().await
 }
 
 #[cfg(test)]
 mod test {
-    use http::Uri;
     use once_cell::sync::{Lazy, OnceCell};
     use tracing_subscriber::{self, EnvFilter, FmtSubscriber};
 
     use super::*;
 
     static GATEWAY_ORIGIN: Lazy<GatewayUri> =
-        Lazy::new(|| GatewayUri::new(Uri::from_static("https://0.0.0.0")).unwrap());
+        Lazy::new(|| GatewayUri::from_static("https://0.0.0.0"));
     static INIT: OnceCell<()> = OnceCell::new();
 
-    #[test]
-    fn mismatched_gateways_not_allowed() {
+    #[tokio::test]
+    async fn mismatched_gateways_not_allowed() {
         init_tracing();
         let not_gateway_origin = "https://0.0.0.0:4433";
         let req = hyper::Request::builder().uri(not_gateway_origin).body(()).unwrap();
         let allowable_gateway = find_allowable_gateway(&req, &*GATEWAY_ORIGIN);
-        assert!(allowable_gateway.is_none());
+        assert!(allowable_gateway.await.is_none());
     }
 
-    #[test]
-    fn matched_gateways_allowed() {
+    #[tokio::test]
+    async fn matched_gateways_allowed() {
         init_tracing();
         // ensure GatewayUri port is defined automatically
         let req = Request::builder().uri("https://0.0.0.0:443").body(()).unwrap();
-        assert!(find_allowable_gateway(&req, &*GATEWAY_ORIGIN).is_some());
+        assert!(find_allowable_gateway(&req, &*GATEWAY_ORIGIN).await.is_some());
     }
 
     fn init_tracing() {

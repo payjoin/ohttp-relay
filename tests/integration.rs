@@ -8,7 +8,6 @@ mod integration {
     use std::str::FromStr;
 
     use hex::FromHex;
-    use http::Uri;
     use http_body_util::combinators::BoxBody;
     use http_body_util::{BodyExt, Full};
     use hyper::body::{Bytes, Incoming};
@@ -34,7 +33,7 @@ mod integration {
     #[tokio::test]
     async fn test_request_response_tcp() {
         let gateway_port = find_free_port();
-        let gateway = Uri::from_str(&format!("http://0.0.0.0:{}", gateway_port)).unwrap();
+        let gateway = GatewayUri::from_str(&format!("http://0.0.0.0:{}", gateway_port)).unwrap();
         let (relay_port, relay_handle) =
             listen_tcp_on_free_port(gateway).await.expect("Failed to listen on free port");
         let relay_task = tokio::spawn(async move {
@@ -70,7 +69,7 @@ mod integration {
         }
 
         let gateway_port = find_free_port();
-        let gateway = Uri::from_str(&format!("http://0.0.0.0:{}", gateway_port)).unwrap();
+        let gateway = GatewayUri::from_str(&format!("http://0.0.0.0:{}", gateway_port)).unwrap();
         let nginx_cert = gen_localhost_cert();
         let nginx_cert_der = cert_to_cert_der(&nginx_cert);
         let socket_path_str = socket_path.to_str().unwrap();
@@ -115,11 +114,12 @@ mod integration {
     async fn handle_gateway(
         req: Request<Incoming>,
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
-        let res = match req.uri().path() {
-            "/" => handle_ohttp_req(req).await,
+        let res = match (req.method(), req.uri().path()) {
+            (&hyper::Method::POST, "/.well-known/ohttp-gateway") => handle_ohttp_req(req).await,
             #[cfg(any(feature = "connect-bootstrap", feature = "ws-bootstrap"))]
-            "/ohttp-keys" => bootstrap::handle_ohttp_keys(req).await,
-            _ => panic!("Unexpected request"),
+            (&hyper::Method::GET, "/.well-known/ohttp-gateway") =>
+                bootstrap::handle_ohttp_keys(req).await,
+            _ => panic!("Unexpected request: {} {}", req.method(), req.uri().path()),
         }
         .unwrap();
         Ok(res)
@@ -244,7 +244,7 @@ mod integration {
                 let mut tls_stream = connector.connect(domain, ws_io).await.unwrap();
 
                 let content =
-                    b"GET /ohttp-keys HTTP/1.1\r\nHost: 0.0.0.0\r\nConnection: close\r\n\r\n";
+                    b"GET /.well-known/ohttp-gateway HTTP/1.1\r\nHost: 0.0.0.0\r\nConnection: close\r\n\r\n";
                 tls_stream.write_all(content).await.unwrap();
                 tls_stream.flush().await.unwrap();
                 let mut plaintext = Vec::new();
@@ -283,7 +283,10 @@ mod integration {
                     ureq::AgentBuilder::new().tls_config(Arc::new(config)).proxy(proxy).build();
                 let res = tokio::task::spawn_blocking(move || {
                     https
-                        .get(format!("https://0.0.0.0:{}/ohttp-keys", gateway_port).as_str())
+                        .get(
+                            format!("https://0.0.0.0:{}/.well-known/ohttp-gateway", gateway_port)
+                                .as_str(),
+                        )
                         .call()
                         .unwrap()
                 })
@@ -300,7 +303,8 @@ mod integration {
             F: FnOnce(u16, u16, CertificateDer<'static>) -> Pin<Box<dyn Future<Output = ()>>>,
         {
             let gateway_port = find_free_port();
-            let gateway = Uri::from_str(&format!("http://0.0.0.0:{}", gateway_port)).unwrap();
+            let gateway =
+                GatewayUri::from_str(&format!("http://0.0.0.0:{}", gateway_port)).unwrap();
             let nginx_cert = gen_localhost_cert();
             let gateway_cert = gen_localhost_cert();
             let gateway_cert_der = cert_to_cert_der(&gateway_cert);
