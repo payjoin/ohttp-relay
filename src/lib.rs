@@ -16,7 +16,6 @@ use hyper::{Method, Request, Response};
 use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo};
-use once_cell::sync::Lazy;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, UnixListener};
 use tokio_util::net::Listener;
@@ -30,10 +29,8 @@ use crate::error::{BoxError, Error};
 pub mod bootstrap;
 
 pub const DEFAULT_PORT: u16 = 3000;
-pub static OHTTP_RELAY_HOST: Lazy<HeaderValue> =
-    Lazy::new(|| HeaderValue::from_str("0.0.0.0").expect("Invalid HeaderValue"));
-pub static EXPECTED_MEDIA_TYPE: Lazy<HeaderValue> =
-    Lazy::new(|| HeaderValue::from_str("message/ohttp-req").expect("Invalid HeaderValue"));
+pub const OHTTP_RELAY_HOST: HeaderValue = HeaderValue::from_static("0.0.0.0");
+pub const EXPECTED_MEDIA_TYPE: HeaderValue = HeaderValue::from_static("message/ohttp-req");
 
 #[instrument]
 pub async fn listen_tcp(
