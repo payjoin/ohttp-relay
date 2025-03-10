@@ -58,7 +58,7 @@ pub async fn listen_tcp_on_free_port(
 ) -> Result<(u16, tokio::task::JoinHandle<Result<(), BoxError>>), BoxError> {
     let listener = tokio::net::TcpListener::bind("[::]:0").await?;
     let port = listener.local_addr()?.port();
-    println!("Directory server binding to port {}", listener.local_addr()?);
+    println!("OHTTP relay binding to port {}", listener.local_addr()?);
     let handle = ohttp_relay(listener, gateway_origin).await?;
     Ok((port, handle))
 }
