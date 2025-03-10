@@ -1,7 +1,10 @@
 use std::net::SocketAddr;
+use std::str::FromStr;
 use std::sync::Arc;
 
+pub use gateway_prober::Prober;
 pub use gateway_uri::GatewayUri;
+use http::uri::Authority;
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::{Bytes, Incoming};
@@ -21,6 +24,10 @@ use tokio_util::net::Listener;
 use tracing::{error, info, instrument};
 
 pub mod error;
+#[cfg(not(feature = "_test-util"))]
+mod gateway_prober;
+#[cfg(feature = "_test-util")]
+pub mod gateway_prober;
 mod gateway_uri;
 use crate::error::{BoxError, Error};
 
@@ -72,15 +79,22 @@ where
     L: Listener + Unpin + Send + 'static,
     L::Io: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    let prober = Arc::new(Prober::default());
+    prober.assert_opt_in(&gateway_origin).await;
+
     let gateway_origin: Arc<GatewayUri> = Arc::new(gateway_origin);
 
     let handle = tokio::spawn(async move {
         while let Ok((stream, _)) = listener.accept().await {
             let gateway_origin = gateway_origin.clone();
+            let prober = prober.clone();
             let io = TokioIo::new(stream);
             tokio::spawn(async move {
                 if let Err(err) = http1::Builder::new()
-                    .serve_connection(io, service_fn(|req| serve_ohttp_relay(req, &gateway_origin)))
+                    .serve_connection(
+                        io,
+                        service_fn(|req| serve_ohttp_relay(req, &gateway_origin, &prober)),
+                    )
                     .with_upgrades()
                     .await
                 {
@@ -97,21 +111,74 @@ where
 #[instrument]
 async fn serve_ohttp_relay(
     req: Request<Incoming>,
-    gateway_origin: &GatewayUri,
+    default_gateway: &GatewayUri,
+    prober: &Prober,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
-    let path = req.uri().path();
-    let mut res = match (req.method(), path) {
+    let mut res = match (req.method(), req.uri().path()) {
         (&Method::OPTIONS, _) => Ok(handle_preflight()),
         (&Method::GET, "/health") => Ok(health_check().await),
-        (&Method::POST, "/") => handle_ohttp_relay(req, gateway_origin).await,
+        (&Method::POST, _) => match parse_gateway_uri(&req, default_gateway, prober).await {
+            Ok(gateway_uri) => handle_ohttp_relay(req, &gateway_uri).await,
+            Err(e) => Err(e),
+        },
         #[cfg(any(feature = "connect-bootstrap", feature = "ws-bootstrap"))]
-        (&Method::CONNECT, _) | (&Method::GET, _) =>
-            crate::bootstrap::handle_ohttp_keys(req, gateway_origin).await,
-        _ => Err(Error::NotFound),
+        (&Method::GET, _) | (&Method::CONNECT, _) =>
+            match parse_gateway_uri(&req, default_gateway, prober).await {
+                Ok(gateway_uri) => crate::bootstrap::handle_ohttp_keys(req, &gateway_uri).await,
+                Err(e) => Err(e),
+            },
+        _ => Err(Error::MethodNotAllowed),
     }
     .unwrap_or_else(|e| e.to_response());
     res.headers_mut().insert(ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
     Ok(res)
+}
+
+async fn parse_gateway_uri(
+    req: &Request<Incoming>,
+    default: &GatewayUri,
+    prober: &Prober,
+) -> Result<GatewayUri, Error> {
+    // for POST and GET (websockets), the gateway URI is provided in the path
+    // for CONNECT requests, just an authority is provided, and we assume HTTPS
+    let gateway_uri = match req.method() {
+        &Method::CONNECT => req.uri().authority().cloned().map(GatewayUri::from),
+        _ => parse_gateway_uri_from_path(req.uri().path(), default).ok(),
+    }
+    .ok_or_else(|| Error::BadRequest("Invalid gateway".to_string()))?;
+
+    let policy = match prober.check_opt_in(&gateway_uri).await {
+        Some(policy) => Ok(policy),
+        None => Err(Error::Unavailable(prober.unavailable_for().await)),
+    }?;
+
+    if policy.bip77_allowed {
+        Ok(gateway_uri)
+    } else {
+        // TODO Cache-Control header for error based on policy.expires
+        // is not found the right error? maybe forbidden or bad gateway?
+        // prober policy judgement can be an enum instead of a bool to
+        // distinguish 4xx vs. 5xx failures, 4xx being an explicit opt out and
+        // 5xx for IO errors etc
+        Err(Error::NotFound)
+
+        // error!("CONNECT host is not socket addr: {:?}", req.uri());
+        // Err(Error::BadRequest("CONNECT Host must be a known gateway socket address".to_string()))
+    }
+}
+
+fn parse_gateway_uri_from_path(path: &str, default: &GatewayUri) -> Result<GatewayUri, BoxError> {
+    if path.is_empty() || path == "/" {
+        return Ok(default.clone());
+    }
+
+    let path = &path[1..];
+
+    if "http://" == &path[..7] || "https://" == &path[..8] {
+        GatewayUri::from_str(path)
+    } else {
+        Ok(Authority::from_str(path)?.into())
+    }
 }
 
 fn handle_preflight() -> Response<BoxBody<Bytes, hyper::Error>> {
@@ -164,13 +231,8 @@ fn into_forward_req(
         req.headers_mut().insert(CONTENT_LENGTH, content_length);
     }
 
-    if let Some(path) = req.uri().path_and_query() {
-        if path != "/" {
-            return Err(Error::NotFound);
-        }
-    }
+    *req.uri_mut() = gateway_origin.rfc_9540_url();
 
-    *req.uri_mut() = gateway_origin.to_uri();
     Ok(req)
 }
 
