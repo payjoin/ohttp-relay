@@ -5,8 +5,11 @@ use http::Uri;
 
 use crate::error::BoxError;
 
+pub(crate) const RFC_9540_GATEWAY_PATH: &str = "/.well-known/ohttp-gateway";
+const ALLOWED_PURPOSES_PATH_AND_QUERY: &str = "/.well-known/ohttp-gateway?allowed_purposes";
+
 /// A normalized gateway origin URI with a default port if none is specified.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct GatewayUri {
     scheme: Scheme,
     authority: Authority,
@@ -50,6 +53,20 @@ impl GatewayUri {
             .path_and_query("/")
             .build()
             .expect("Building Uri from scheme and authority must succeed")
+    }
+
+    pub fn rfc_9540_url(&self) -> Uri {
+        self.to_uri_builder()
+            .path_and_query(RFC_9540_GATEWAY_PATH)
+            .build()
+            .expect("building RFC 9540 uri from scheme and authority must succeed")
+    }
+
+    pub fn probe_url(&self) -> Uri {
+        self.to_uri_builder()
+            .path_and_query(ALLOWED_PURPOSES_PATH_AND_QUERY)
+            .build()
+            .expect("building RFC 9540 uri from scheme and authority must succeed")
     }
 
     pub async fn to_socket_addr(&self) -> Option<std::net::SocketAddr> {
@@ -106,8 +123,14 @@ mod test {
         let gateway_uri =
             GatewayUri::try_from(uri_without_port).expect("should be a valid gateway base URI");
 
-        let uri: Uri = gateway_uri.into();
+        let uri: Uri = gateway_uri.clone().into();
         assert_eq!(uri, uri_with_port, "uri should be canonicalized to contain port");
+
+        assert_eq!(
+            gateway_uri.rfc_9540_url(),
+            Uri::from_static("http://payjo.in:80/.well-known/ohttp-gateway"),
+            "uri should be canonicalized to contain port"
+        );
     }
 
     #[test]

@@ -18,6 +18,7 @@ mod integration {
     use hyper_rustls::HttpsConnectorBuilder;
     use hyper_util::client::legacy::Client;
     use hyper_util::rt::{TokioExecutor, TokioIo};
+    use ohttp_relay::gateway_prober::{ALLOWED_PURPOSES_CONTENT_TYPE, MAGIC_BIP77_PURPOSE};
     use ohttp_relay::*;
     use rcgen::Certificate;
     use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -35,7 +36,7 @@ mod integration {
         let gateway_port = find_free_port();
         let gateway = GatewayUri::from_str(&format!("http://0.0.0.0:{}", gateway_port)).unwrap();
         let (relay_port, relay_handle) =
-            listen_tcp_on_free_port(gateway).await.expect("Failed to listen on free port");
+            listen_tcp_on_free_port(gateway.clone()).await.expect("Failed to listen on free port");
         let relay_task = tokio::spawn(async move {
             if let Err(e) = relay_handle.await {
                 eprintln!("Relay failed: {}", e);
@@ -55,7 +56,7 @@ mod integration {
             _ = relay_task => {
                 assert!(false, "Relay is long running");
             }
-            _ = ohttp_req(n_https_port, nginx_cert_der) => {}
+            _ = ohttp_req(n_https_port, nginx_cert_der, gateway) => {}
         }
     }
 
@@ -73,8 +74,9 @@ mod integration {
         let nginx_cert = gen_localhost_cert();
         let nginx_cert_der = cert_to_cert_der(&nginx_cert);
         let socket_path_str = socket_path.to_str().unwrap();
-        let relay_handle =
-            listen_socket(socket_path_str, gateway).await.expect("Failed to listen on socket");
+        let relay_handle = listen_socket(socket_path_str, gateway.clone())
+            .await
+            .expect("Failed to listen on socket");
         let relay_task = tokio::spawn(async move {
             if let Err(e) = relay_handle.await {
                 eprintln!("Relay failed: {}", e);
@@ -92,7 +94,7 @@ mod integration {
             _ = relay_task => {
                 assert!(false, "Relay is long running");
             }
-            _ = ohttp_req(n_https_port, nginx_cert_der) => {}
+            _ = ohttp_req(n_https_port, nginx_cert_der, gateway) => {}
         }
         Ok(())
     }
@@ -114,11 +116,14 @@ mod integration {
     async fn handle_gateway(
         req: Request<Incoming>,
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
-        let res = match req.uri().path() {
-            "/" => handle_ohttp_req(req).await,
+        let res = match (req.method(), req.uri().path(), req.uri().query()) {
+            (&hyper::Method::POST, "/.well-known/ohttp-gateway", _) => handle_ohttp_req(req).await,
             #[cfg(any(feature = "connect-bootstrap", feature = "ws-bootstrap"))]
-            "/ohttp-keys" => bootstrap::handle_ohttp_keys(req).await,
-            _ => panic!("Unexpected request"),
+            (&hyper::Method::GET, "/.well-known/ohttp-gateway", None) =>
+                bootstrap::handle_ohttp_keys(req).await,
+            (&hyper::Method::GET, "/.well-known/ohttp-gateway", Some("allowed_purposes")) =>
+                handle_opt_in(req).await,
+            _ => panic!("Unexpected request: {} {}", req.method(), req.uri().path()),
         }
         .unwrap();
         Ok(res)
@@ -134,34 +139,47 @@ mod integration {
         Ok(res)
     }
 
-    async fn ohttp_req(relay_port: u16, cert: CertificateDer<'static>) -> () {
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        let mut req = Request::new(full(Vec::from_hex(ENCAPSULATED_REQ).unwrap()).boxed());
-        *req.method_mut() = hyper::Method::POST;
-        *req.uri_mut() = format!("https://0.0.0.0:{}/", relay_port).parse().unwrap();
-        req.headers_mut().insert(CONTENT_TYPE, HeaderValue::from_static("message/ohttp-req"));
-        req.headers_mut().insert(CONTENT_LENGTH, HeaderValue::from_static("78"));
+    async fn handle_opt_in(
+        _: Request<Incoming>,
+    ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
+        let mut res = Response::new(full([b"\x00\x01\x2a", MAGIC_BIP77_PURPOSE].concat()));
+        *res.status_mut() = hyper::StatusCode::OK;
+        res.headers_mut()
+            .insert(CONTENT_TYPE, HeaderValue::from_static(ALLOWED_PURPOSES_CONTENT_TYPE));
+        res.headers_mut().insert(CONTENT_LENGTH, HeaderValue::from_static("45"));
+        Ok(res)
+    }
 
-        let mut root_store = rustls::RootCertStore::empty();
-        root_store.add(cert).unwrap();
+    async fn ohttp_req(relay_port: u16, cert: CertificateDer<'static>, gateway: GatewayUri) -> () {
+        for gw_path in ["", &gateway.to_uri().to_string()] {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            let mut req = Request::new(full(Vec::from_hex(ENCAPSULATED_REQ).unwrap()).boxed());
+            *req.method_mut() = hyper::Method::POST;
+            *req.uri_mut() = format!("https://0.0.0.0:{}/{}", relay_port, gw_path).parse().unwrap();
+            req.headers_mut().insert(CONTENT_TYPE, HeaderValue::from_static("message/ohttp-req"));
+            req.headers_mut().insert(CONTENT_LENGTH, HeaderValue::from_static("78"));
 
-        let config = rustls::ClientConfig::builder()
-            .with_root_certificates(root_store)
-            .with_no_client_auth();
+            let mut root_store = rustls::RootCertStore::empty();
+            root_store.add(cert.clone()).unwrap();
 
-        let https = HttpsConnectorBuilder::new()
-            .with_tls_config(config)
-            .https_or_http()
-            .enable_http1()
-            .build();
-        let client = Client::builder(TokioExecutor::new()).build(https);
-        let res = client.request(req).await.unwrap();
-        assert_eq!(res.status(), hyper::StatusCode::OK);
-        assert_eq!(
-            res.headers().get(CONTENT_TYPE),
-            Some(&HeaderValue::from_static("message/ohttp-res"))
-        );
-        assert_eq!(res.headers().get(CONTENT_LENGTH), Some(&HeaderValue::from_static("35")));
+            let config = rustls::ClientConfig::builder()
+                .with_root_certificates(root_store)
+                .with_no_client_auth();
+
+            let https = HttpsConnectorBuilder::new()
+                .with_tls_config(config)
+                .https_or_http()
+                .enable_http1()
+                .build();
+            let client = Client::builder(TokioExecutor::new()).build(https);
+            let res = client.request(req).await.unwrap();
+            assert_eq!(res.status(), hyper::StatusCode::OK);
+            assert_eq!(
+                res.headers().get(CONTENT_TYPE),
+                Some(&HeaderValue::from_static("message/ohttp-res"))
+            );
+            assert_eq!(res.headers().get(CONTENT_LENGTH), Some(&HeaderValue::from_static("35")));
+        }
     }
 
     async fn example_gateway<F>(port: u16, handle_conn: F) -> Result<(), Box<dyn std::error::Error>>
@@ -243,7 +261,7 @@ mod integration {
                 let mut tls_stream = connector.connect(domain, ws_io).await.unwrap();
 
                 let content =
-                    b"GET /ohttp-keys HTTP/1.1\r\nHost: 0.0.0.0\r\nConnection: close\r\n\r\n";
+                    b"GET /.well-known/ohttp-gateway HTTP/1.1\r\nHost: 0.0.0.0\r\nConnection: close\r\n\r\n";
                 tls_stream.write_all(content).await.unwrap();
                 tls_stream.flush().await.unwrap();
                 let mut plaintext = Vec::new();
@@ -282,7 +300,10 @@ mod integration {
                     ureq::AgentBuilder::new().tls_config(Arc::new(config)).proxy(proxy).build();
                 let res = tokio::task::spawn_blocking(move || {
                     https
-                        .get(format!("https://0.0.0.0:{}/ohttp-keys", gateway_port).as_str())
+                        .get(
+                            format!("https://0.0.0.0:{}/.well-known/ohttp-gateway", gateway_port)
+                                .as_str(),
+                        )
                         .call()
                         .unwrap()
                 })

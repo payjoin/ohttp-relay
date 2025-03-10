@@ -1,6 +1,9 @@
+use std::time::Duration;
+
 use http_body_util::combinators::BoxBody;
 use http_body_util::BodyExt;
 use hyper::body::Bytes;
+use hyper::header::{HeaderValue, CACHE_CONTROL};
 use hyper::{Response, StatusCode};
 
 use crate::{empty, full};
@@ -16,6 +19,7 @@ pub(crate) enum Error {
     BadRequest(String),
     NotFound,
     InternalServerError,
+    Unavailable(Duration),
 }
 
 impl Error {
@@ -31,6 +35,14 @@ impl Error {
             }
             Self::NotFound => *res.status_mut() = StatusCode::NOT_FOUND,
             Self::InternalServerError => *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Unavailable(max_age) => {
+                *res.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
+                res.headers_mut().append(
+                    CACHE_CONTROL,
+                    HeaderValue::from_str(&format!("max-age={}", max_age.as_secs()))
+                        .expect("header value should always be valid"),
+                );
+            }
         };
         res
     }
@@ -45,6 +57,7 @@ impl std::fmt::Display for Error {
             Self::BadRequest(e) => write!(f, "Bad request: {}", e),
             Self::NotFound => write!(f, "Not found"),
             Self::InternalServerError => write!(f, "Internal server error"),
+            Self::Unavailable(_) => write!(f, "Service unavailable"),
         }
     }
 }
