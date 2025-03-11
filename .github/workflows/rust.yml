@@ -40,6 +40,7 @@ jobs:
           cargo update -p security-framework-sys --precise "2.11.1"
           cargo update -p ring --precise 0.17.12
           cargo update -p flate2 --precise 1.0.35
+          cargo update -p once_cell --precise 1.20.3
       - name: test ohttp-relay
         run: cargo test --verbose --all-features
 
