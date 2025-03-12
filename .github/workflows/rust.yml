@@ -30,6 +30,7 @@ jobs:
           echo "$(pwd)/nginx/bin" >> $GITHUB_PATH
       - name: test ohttp-relay
         run: cargo test --locked --verbose --all-features
+        run: cargo test --locked --verbose
 
   fmt:
     runs-on: ubuntu-latest
