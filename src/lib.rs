@@ -12,7 +12,8 @@ use hyper::header::{
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response};
-use hyper_rustls::HttpsConnectorBuilder;
+use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
+use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -39,7 +40,7 @@ pub async fn listen_tcp(
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(addr).await?;
     println!("OHTTP relay listening on tcp://{}", addr);
-    ohttp_relay(listener, gateway_origin).await
+    ohttp_relay(listener, RelayConfig::new(gateway_origin)).await
 }
 
 #[instrument]
@@ -49,7 +50,7 @@ pub async fn listen_socket(
 ) -> Result<tokio::task::JoinHandle<Result<(), BoxError>>, BoxError> {
     let listener = UnixListener::bind(socket_path)?;
     info!("OHTTP relay listening on socket: {}", socket_path);
-    ohttp_relay(listener, gateway_origin).await
+    ohttp_relay(listener, RelayConfig::new(gateway_origin)).await
 }
 
 #[cfg(feature = "_test-util")]
@@ -63,24 +64,64 @@ pub async fn listen_tcp_on_free_port(
     Ok((port, handle))
 }
 
+#[derive(Debug)]
+struct RelayConfig {
+    default_gateway: GatewayUri,
+    client: hyper_util::client::legacy::Client<HttpsConnector<HttpConnector>, Incoming>,
+}
+
+impl RelayConfig {
+    fn new(default_gateway: GatewayUri) -> Self {
+        Self::new_with_client(default_gateway, default_http_client())
+    }
+
+    fn new_with_client(
+        default_gateway: GatewayUri,
+        client: hyper_util::client::legacy::Client<HttpsConnector<HttpConnector>, Incoming>,
+    ) -> Self {
+        RelayConfig { default_gateway, client }
+    }
+}
+
+fn default_http_client(
+) -> hyper_util::client::legacy::Client<HttpsConnector<HttpConnector>, Incoming> {
+    #[cfg(not(feature = "_test-util"))]
+    let builder = HttpsConnectorBuilder::new().with_webpki_roots();
+
+    // During testing we require self signed certificates, so if SSL_CERT_FILE
+    // is explicitly set under such builds, parse root certificates from the
+    // specified PEM file
+    #[cfg(feature = "_test-util")]
+    let builder = if std::env::var("SSL_CERT_FILE").is_ok() {
+        HttpsConnectorBuilder::new()
+            .with_native_roots()
+            .expect("SSL_CERT_FILE provided certificates must load")
+    } else {
+        HttpsConnectorBuilder::new().with_webpki_roots()
+    };
+
+    let https = builder.https_or_http().enable_http1().build();
+    Client::builder(TokioExecutor::new()).build(https)
+}
+
 #[instrument(skip(listener))]
 async fn ohttp_relay<L>(
     mut listener: L,
-    gateway_origin: GatewayUri,
+    config: RelayConfig,
 ) -> Result<tokio::task::JoinHandle<Result<(), BoxError>>, BoxError>
 where
     L: Listener + Unpin + Send + 'static,
     L::Io: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let gateway_origin: Arc<GatewayUri> = Arc::new(gateway_origin);
+    let config = Arc::new(config);
 
     let handle = tokio::spawn(async move {
         while let Ok((stream, _)) = listener.accept().await {
-            let gateway_origin = gateway_origin.clone();
+            let config = config.clone();
             let io = TokioIo::new(stream);
             tokio::spawn(async move {
                 if let Err(err) = http1::Builder::new()
-                    .serve_connection(io, service_fn(|req| serve_ohttp_relay(req, &gateway_origin)))
+                    .serve_connection(io, service_fn(|req| serve_ohttp_relay(req, &config)))
                     .with_upgrades()
                     .await
                 {
@@ -97,16 +138,16 @@ where
 #[instrument]
 async fn serve_ohttp_relay(
     req: Request<Incoming>,
-    gateway_origin: &GatewayUri,
+    config: &RelayConfig,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
     let path = req.uri().path();
     let mut res = match (req.method(), path) {
         (&Method::OPTIONS, _) => Ok(handle_preflight()),
         (&Method::GET, "/health") => Ok(health_check().await),
-        (&Method::POST, "/") => handle_ohttp_relay(req, gateway_origin).await,
+        (&Method::POST, "/") => handle_ohttp_relay(req, config).await,
         #[cfg(any(feature = "connect-bootstrap", feature = "ws-bootstrap"))]
         (&Method::CONNECT, _) | (&Method::GET, _) =>
-            crate::bootstrap::handle_ohttp_keys(req, gateway_origin).await,
+            crate::bootstrap::handle_ohttp_keys(req, &config.default_gateway).await,
         _ => Err(Error::NotFound),
     }
     .unwrap_or_else(|e| e.to_response());
@@ -134,10 +175,10 @@ async fn health_check() -> Response<BoxBody<Bytes, hyper::Error>> { Response::ne
 #[instrument]
 async fn handle_ohttp_relay(
     req: Request<Incoming>,
-    gateway_origin: &GatewayUri,
+    config: &RelayConfig,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Error> {
-    let fwd_req = into_forward_req(req, gateway_origin)?;
-    forward_request(fwd_req).await.map(|res| {
+    let fwd_req = into_forward_req(req, &config.default_gateway)?;
+    forward_request(fwd_req, config).await.map(|res| {
         let (parts, body) = res.into_parts();
         let boxed_body = BoxBody::new(body);
         Response::from_parts(parts, boxed_body)
@@ -175,24 +216,11 @@ fn into_forward_req(
 }
 
 #[instrument]
-async fn forward_request(req: Request<Incoming>) -> Result<Response<Incoming>, Error> {
-    #[cfg(not(feature = "_test-util"))]
-    let builder = HttpsConnectorBuilder::new().with_webpki_roots();
-
-    // During testing we require self signed certificates, so if SSL_CERT_FILE
-    // is explicitly set under such builds, parse root certificates from the
-    // specified PEM file
-    #[cfg(feature = "_test-util")]
-    let builder = if std::env::var("SSL_CERT_FILE").is_ok() {
-        HttpsConnectorBuilder::new()
-            .with_native_roots()
-            .expect("SSL_CERT_FILE provided certificates must load")
-    } else {
-        HttpsConnectorBuilder::new().with_webpki_roots()
-    };
-
-    let https = builder.https_or_http().enable_http1().build();
-    let client = Client::builder(TokioExecutor::new()).build(https);
+async fn forward_request(
+    req: Request<Incoming>,
+    config: &RelayConfig,
+) -> Result<Response<Incoming>, Error> {
+    let client = config.client.clone();
     client.request(req).await.map_err(|_| Error::BadGateway)
 }
 
