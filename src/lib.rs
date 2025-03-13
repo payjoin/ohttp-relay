@@ -12,6 +12,7 @@ use hyper::header::{
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response};
+use hyper_rustls::builderstates::WantsSchemes;
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
@@ -40,7 +41,7 @@ pub async fn listen_tcp(
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(addr).await?;
     println!("OHTTP relay listening on tcp://{}", addr);
-    ohttp_relay(listener, RelayConfig::new(gateway_origin)).await
+    ohttp_relay(listener, RelayConfig::new_with_default_client(gateway_origin)).await
 }
 
 #[instrument]
@@ -50,58 +51,67 @@ pub async fn listen_socket(
 ) -> Result<tokio::task::JoinHandle<Result<(), BoxError>>, BoxError> {
     let listener = UnixListener::bind(socket_path)?;
     info!("OHTTP relay listening on socket: {}", socket_path);
-    ohttp_relay(listener, RelayConfig::new(gateway_origin)).await
+    ohttp_relay(listener, RelayConfig::new_with_default_client(gateway_origin)).await
 }
 
 #[cfg(feature = "_test-util")]
 pub async fn listen_tcp_on_free_port(
-    gateway_origin: GatewayUri,
+    default_gateway: GatewayUri,
+    root_store: rustls::RootCertStore,
 ) -> Result<(u16, tokio::task::JoinHandle<Result<(), BoxError>>), BoxError> {
     let listener = tokio::net::TcpListener::bind("[::]:0").await?;
     let port = listener.local_addr()?.port();
     println!("OHTTP relay binding to port {}", listener.local_addr()?);
-    let handle = ohttp_relay(listener, gateway_origin).await?;
+    let config = RelayConfig::new(default_gateway, root_store);
+    let handle = ohttp_relay(listener, config).await?;
     Ok((port, handle))
 }
 
 #[derive(Debug)]
 struct RelayConfig {
     default_gateway: GatewayUri,
-    client: hyper_util::client::legacy::Client<HttpsConnector<HttpConnector>, Incoming>,
+    client: HttpClient,
 }
 
 impl RelayConfig {
-    fn new(default_gateway: GatewayUri) -> Self {
-        Self::new_with_client(default_gateway, default_http_client())
+    fn new_with_default_client(default_gateway: GatewayUri) -> Self {
+        Self::new(default_gateway, HttpClient::default())
     }
 
-    fn new_with_client(
-        default_gateway: GatewayUri,
-        client: hyper_util::client::legacy::Client<HttpsConnector<HttpConnector>, Incoming>,
-    ) -> Self {
-        RelayConfig { default_gateway, client }
+    fn new(default_gateway: GatewayUri, into_client: impl Into<HttpClient>) -> Self {
+        RelayConfig { default_gateway, client: into_client.into() }
     }
 }
 
-fn default_http_client(
-) -> hyper_util::client::legacy::Client<HttpsConnector<HttpConnector>, Incoming> {
-    #[cfg(not(feature = "_test-util"))]
-    let builder = HttpsConnectorBuilder::new().with_webpki_roots();
+#[derive(Debug, Clone)]
+struct HttpClient(hyper_util::client::legacy::Client<HttpsConnector<HttpConnector>, Incoming>);
 
-    // During testing we require self signed certificates, so if SSL_CERT_FILE
-    // is explicitly set under such builds, parse root certificates from the
-    // specified PEM file
-    #[cfg(feature = "_test-util")]
-    let builder = if std::env::var("SSL_CERT_FILE").is_ok() {
+impl std::ops::Deref for HttpClient {
+    type Target = hyper_util::client::legacy::Client<HttpsConnector<HttpConnector>, Incoming>;
+    fn deref(&self) -> &Self::Target { &self.0 }
+}
+
+impl From<HttpsConnectorBuilder<WantsSchemes>> for HttpClient {
+    fn from(builder: HttpsConnectorBuilder<WantsSchemes>) -> Self {
+        let https = builder.https_or_http().enable_http1().build();
+        Self(Client::builder(TokioExecutor::new()).build(https))
+    }
+}
+
+impl Default for HttpClient {
+    fn default() -> Self { HttpsConnectorBuilder::new().with_webpki_roots().into() }
+}
+
+impl From<rustls::RootCertStore> for HttpClient {
+    fn from(root_store: rustls::RootCertStore) -> Self {
         HttpsConnectorBuilder::new()
-            .with_native_roots()
-            .expect("SSL_CERT_FILE provided certificates must load")
-    } else {
-        HttpsConnectorBuilder::new().with_webpki_roots()
-    };
-
-    let https = builder.https_or_http().enable_http1().build();
-    Client::builder(TokioExecutor::new()).build(https)
+            .with_tls_config(
+                rustls::ClientConfig::builder()
+                    .with_root_certificates(root_store)
+                    .with_no_client_auth(),
+            )
+            .into()
+    }
 }
 
 #[instrument(skip(listener))]
@@ -220,8 +230,7 @@ async fn forward_request(
     req: Request<Incoming>,
     config: &RelayConfig,
 ) -> Result<Response<Incoming>, Error> {
-    let client = config.client.clone();
-    client.request(req).await.map_err(|_| Error::BadGateway)
+    config.client.request(req).await.map_err(|_| Error::BadGateway)
 }
 
 pub(crate) fn empty() -> BoxBody<Bytes, hyper::Error> {
