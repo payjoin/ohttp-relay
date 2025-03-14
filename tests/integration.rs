@@ -34,17 +34,23 @@ mod integration {
     async fn test_request_response_tcp() {
         let gateway_port = find_free_port();
         let gateway = GatewayUri::from_str(&format!("http://0.0.0.0:{}", gateway_port)).unwrap();
-        let (relay_port, relay_handle) =
-            listen_tcp_on_free_port(gateway).await.expect("Failed to listen on free port");
+
+        let nginx_cert = gen_localhost_cert();
+        let nginx_cert_der = cert_to_cert_der(&nginx_cert);
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.add(nginx_cert_der.clone()).unwrap();
+
+        let (relay_port, relay_handle) = listen_tcp_on_free_port(gateway, root_store)
+            .await
+            .expect("Failed to listen on free port");
         let relay_task = tokio::spawn(async move {
             if let Err(e) = relay_handle.await {
                 eprintln!("Relay failed: {}", e);
             }
         });
+
         let n_http_port = find_free_port();
         let n_https_port = find_free_port();
-        let nginx_cert = gen_localhost_cert();
-        let nginx_cert_der = cert_to_cert_der(&nginx_cert);
         let _nginx =
             start_nginx(n_http_port, n_https_port, format!("0.0.0.0:{}", relay_port), nginx_cert)
                 .await;
@@ -302,10 +308,15 @@ mod integration {
             let gateway =
                 GatewayUri::from_str(&format!("http://0.0.0.0:{}", gateway_port)).unwrap();
             let nginx_cert = gen_localhost_cert();
+            let nginx_cert_der = cert_to_cert_der(&nginx_cert);
             let gateway_cert = gen_localhost_cert();
             let gateway_cert_der = cert_to_cert_der(&gateway_cert);
-            let (relay_port, relay_handle) =
-                listen_tcp_on_free_port(gateway).await.expect("Failed to listen on free port");
+            let mut root_store = rustls::RootCertStore::empty();
+            root_store.add(gateway_cert_der.clone()).unwrap();
+            root_store.add(nginx_cert_der).unwrap();
+            let (relay_port, relay_handle) = listen_tcp_on_free_port(gateway, root_store)
+                .await
+                .expect("Failed to listen on free port");
             let relay_task = tokio::spawn(async move {
                 if let Err(e) = relay_handle.await {
                     eprintln!("Relay failed: {}", e);
