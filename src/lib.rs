@@ -10,7 +10,7 @@ use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::{Bytes, Incoming};
 use hyper::header::{
     HeaderValue, ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS,
-    ACCESS_CONTROL_ALLOW_ORIGIN, CONTENT_LENGTH, CONTENT_TYPE, HOST,
+    ACCESS_CONTROL_ALLOW_ORIGIN, CONTENT_LENGTH, CONTENT_TYPE,
 };
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -92,10 +92,15 @@ impl RelayConfig {
 }
 
 #[derive(Debug, Clone)]
-struct HttpClient(hyper_util::client::legacy::Client<HttpsConnector<HttpConnector>, Incoming>);
+pub(crate) struct HttpClient(
+    hyper_util::client::legacy::Client<HttpsConnector<HttpConnector>, BoxBody<Bytes, hyper::Error>>,
+);
 
 impl std::ops::Deref for HttpClient {
-    type Target = hyper_util::client::legacy::Client<HttpsConnector<HttpConnector>, Incoming>;
+    type Target = hyper_util::client::legacy::Client<
+        HttpsConnector<HttpConnector>,
+        BoxBody<Bytes, hyper::Error>,
+    >;
     fn deref(&self) -> &Self::Target { &self.0 }
 }
 
@@ -256,31 +261,34 @@ async fn handle_ohttp_relay(
 /// Convert an incoming request into a request to forward to the target gateway server.
 #[instrument]
 fn into_forward_req(
-    mut req: Request<Incoming>,
+    req: Request<Incoming>,
     gateway_origin: GatewayUri,
-) -> Result<Request<Incoming>, Error> {
-    if req.method() != hyper::Method::POST {
+) -> Result<Request<BoxBody<Bytes, hyper::Error>>, Error> {
+    let (head, body) = req.into_parts();
+
+    if head.method != hyper::Method::POST {
         return Err(Error::MethodNotAllowed);
     }
-    let content_type_header = req.headers().get(CONTENT_TYPE).cloned();
-    let content_length_header = req.headers().get(CONTENT_LENGTH).cloned();
-    req.headers_mut().clear();
-    req.headers_mut().insert(HOST, OHTTP_RELAY_HOST.to_owned());
-    if content_type_header != Some(EXPECTED_MEDIA_TYPE.to_owned()) {
+
+    if head.headers.get(CONTENT_TYPE) != Some(&EXPECTED_MEDIA_TYPE) {
         return Err(Error::UnsupportedMediaType);
     }
-    if let Some(content_length) = content_length_header {
-        req.headers_mut().insert(CONTENT_LENGTH, content_length);
+
+    let mut builder = Request::builder()
+        .method(hyper::Method::POST)
+        .uri(gateway_origin.rfc_9540_url())
+        .header(CONTENT_TYPE, EXPECTED_MEDIA_TYPE);
+
+    if let Some(content_length) = head.headers.get(CONTENT_LENGTH) {
+        builder = builder.header(CONTENT_LENGTH, content_length);
     }
 
-    *req.uri_mut() = gateway_origin.rfc_9540_url();
-
-    Ok(req)
+    builder.body(BoxBody::new(body)).map_err(|e| Error::InternalServerError(Box::new(e)))
 }
 
 #[instrument]
 async fn forward_request(
-    req: Request<Incoming>,
+    req: Request<BoxBody<Bytes, hyper::Error>>,
     config: &RelayConfig,
 ) -> Result<Response<Incoming>, Error> {
     config.client.request(req).await.map_err(|_| Error::BadGateway)
