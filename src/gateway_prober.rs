@@ -9,10 +9,6 @@ use bytes::BytesMut;
 use futures::future::{self, FutureExt};
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
-use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
-use hyper_util::client::legacy::connect::HttpConnector;
-use hyper_util::client::legacy::Client;
-use hyper_util::rt::TokioExecutor;
 use tokio::sync::{oneshot, RwLock};
 use tokio::time::Instant;
 
@@ -49,6 +45,7 @@ enum Status {
 pub(crate) struct Prober {
     gateways: RwLock<KnownGateways>,
     ttl_config: TTLConfig,
+    client: super::HttpClient,
 }
 
 #[derive(Debug)]
@@ -178,6 +175,10 @@ impl KnownGateways {
 }
 
 impl Prober {
+    pub(crate) fn new_with_client(client: super::HttpClient) -> Self {
+        Self { client, ..Self::default() }
+    }
+
     /// Permanently mark a gateway authority as allowed.
     pub(crate) async fn assert_opt_in(&self, url: &GatewayUri) -> Option<()> {
         let mut locked_map = self.gateways.write().await;
@@ -247,23 +248,18 @@ impl Prober {
 
     /// Probes a target gateway by attempting to send a GET request.
     async fn probe(&self, base_url: &GatewayUri) -> Policy {
-        // FIXME instead of constructing a new client each time, client should
-        // be constructed once and cloned
-        let https =
-            HttpsConnectorBuilder::new().with_webpki_roots().https_or_http().enable_http1().build();
-        let client: hyper_util::client::legacy::Client<
-            HttpsConnector<HttpConnector>,
-            http_body_util::Empty<&[u8]>,
-        > = Client::builder(TokioExecutor::new()).build(https);
-
         // Create a GET request without a body
         let req = hyper::Request::builder()
             .method(hyper::Method::GET)
             .uri(base_url.probe_url())
-            .body(http_body_util::Empty::new())
+            .body(http_body_util::combinators::BoxBody::<bytes::Bytes, hyper::Error>::new(
+                http_body_util::Empty::new().map_err(|_| {
+                    panic!("infalliable error type should never produce an actual error to map")
+                }),
+            ))
             .expect("creating GET request must succeed");
 
-        let mut res = client.request(req).await;
+        let mut res = self.client.request(req).await;
 
         // opt-in is tracked via a separate mutable variable since it only
         // occurs in the first sub-branch of this large conditional, which is

@@ -87,7 +87,9 @@ impl RelayConfig {
     }
 
     fn new(default_gateway: GatewayUri, into_client: impl Into<HttpClient>) -> Self {
-        RelayConfig { default_gateway, client: into_client.into(), prober: Prober::default() }
+        let client = into_client.into();
+        let prober = Prober::new_with_client(client.clone());
+        RelayConfig { default_gateway, client, prober }
     }
 }
 
