@@ -24,11 +24,17 @@ pub(crate) fn is_websocket_request(req: &Request<Incoming>) -> bool {
 #[instrument]
 pub(crate) async fn try_upgrade(
     req: &mut Request<Incoming>,
-    gateway_origin: &GatewayUri,
+    gateway_origin: GatewayUri,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Error> {
+    let gateway_addr = gateway_origin
+        .to_socket_addr()
+        .await
+        .map_err(|e| Error::InternalServerError(Box::new(e)))?
+        .ok_or_else(|| Error::NotFound)?;
+
     let (res, websocket) = hyper_tungstenite::upgrade(req, None)
         .map_err(|e| Error::BadRequest(format!("Error upgrading to websocket: {}", e)))?;
-    let gateway_addr = gateway_origin.to_socket_addr().await.ok_or(Error::InternalServerError)?;
+
     tokio::spawn(async move {
         if let Err(e) = serve_websocket(websocket, gateway_addr).await {
             error!("Error in websocket connection: {e}");

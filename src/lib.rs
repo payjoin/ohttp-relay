@@ -1,13 +1,16 @@
 use std::net::SocketAddr;
+use std::str::FromStr;
 use std::sync::Arc;
 
+pub(crate) use gateway_prober::Prober;
 pub use gateway_uri::GatewayUri;
+use http::uri::Authority;
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::{Bytes, Incoming};
 use hyper::header::{
     HeaderValue, ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS,
-    ACCESS_CONTROL_ALLOW_ORIGIN, CONTENT_LENGTH, CONTENT_TYPE, HOST,
+    ACCESS_CONTROL_ALLOW_ORIGIN, CONTENT_LENGTH, CONTENT_TYPE,
 };
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -23,6 +26,10 @@ use tokio_util::net::Listener;
 use tracing::{error, info, instrument};
 
 pub mod error;
+#[cfg(not(feature = "_test-util"))]
+mod gateway_prober;
+#[cfg(feature = "_test-util")]
+pub mod gateway_prober;
 mod gateway_uri;
 use crate::error::{BoxError, Error};
 
@@ -71,6 +78,7 @@ pub async fn listen_tcp_on_free_port(
 struct RelayConfig {
     default_gateway: GatewayUri,
     client: HttpClient,
+    prober: Prober,
 }
 
 impl RelayConfig {
@@ -79,15 +87,22 @@ impl RelayConfig {
     }
 
     fn new(default_gateway: GatewayUri, into_client: impl Into<HttpClient>) -> Self {
-        RelayConfig { default_gateway, client: into_client.into() }
+        let client = into_client.into();
+        let prober = Prober::new_with_client(client.clone());
+        RelayConfig { default_gateway, client, prober }
     }
 }
 
 #[derive(Debug, Clone)]
-struct HttpClient(hyper_util::client::legacy::Client<HttpsConnector<HttpConnector>, Incoming>);
+pub(crate) struct HttpClient(
+    hyper_util::client::legacy::Client<HttpsConnector<HttpConnector>, BoxBody<Bytes, hyper::Error>>,
+);
 
 impl std::ops::Deref for HttpClient {
-    type Target = hyper_util::client::legacy::Client<HttpsConnector<HttpConnector>, Incoming>;
+    type Target = hyper_util::client::legacy::Client<
+        HttpsConnector<HttpConnector>,
+        BoxBody<Bytes, hyper::Error>,
+    >;
     fn deref(&self) -> &Self::Target { &self.0 }
 }
 
@@ -123,6 +138,8 @@ where
     L: Listener + Unpin + Send + 'static,
     L::Io: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    config.prober.assert_opt_in(&config.default_gateway).await;
+
     let config = Arc::new(config);
 
     let handle = tokio::spawn(async move {
@@ -150,19 +167,66 @@ async fn serve_ohttp_relay(
     req: Request<Incoming>,
     config: &RelayConfig,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
-    let path = req.uri().path();
-    let mut res = match (req.method(), path) {
+    let mut res = match (req.method(), req.uri().path()) {
         (&Method::OPTIONS, _) => Ok(handle_preflight()),
         (&Method::GET, "/health") => Ok(health_check().await),
-        (&Method::POST, "/") => handle_ohttp_relay(req, config).await,
+        (&Method::POST, _) => match parse_gateway_uri(&req, config).await {
+            Ok(gateway_uri) => handle_ohttp_relay(req, config, gateway_uri).await,
+            Err(e) => Err(e),
+        },
         #[cfg(any(feature = "connect-bootstrap", feature = "ws-bootstrap"))]
-        (&Method::CONNECT, _) | (&Method::GET, _) =>
-            crate::bootstrap::handle_ohttp_keys(req, &config.default_gateway).await,
+        (&Method::GET, _) | (&Method::CONNECT, _) => match parse_gateway_uri(&req, config).await {
+            Ok(gateway_uri) => crate::bootstrap::handle_ohttp_keys(req, gateway_uri).await,
+            Err(e) => Err(e),
+        },
         _ => Err(Error::NotFound),
     }
     .unwrap_or_else(|e| e.to_response());
     res.headers_mut().insert(ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
     Ok(res)
+}
+
+async fn parse_gateway_uri(
+    req: &Request<Incoming>,
+    config: &RelayConfig,
+) -> Result<GatewayUri, Error> {
+    // for POST and GET (websockets), the gateway URI is provided in the path
+    // for CONNECT requests, just an authority is provided, and we assume HTTPS
+    let gateway_uri = match req.method() {
+        &Method::CONNECT => req.uri().authority().cloned().map(GatewayUri::from),
+        _ => parse_gateway_uri_from_path(req.uri().path(), &config.default_gateway).ok(),
+    }
+    .ok_or_else(|| Error::BadRequest("Invalid gateway".to_string()))?;
+
+    let policy = match config.prober.check_opt_in(&gateway_uri).await {
+        Some(policy) => Ok(policy),
+        None => Err(Error::Unavailable(config.prober.unavailable_for().await)),
+    }?;
+
+    if policy.bip77_allowed {
+        Ok(gateway_uri)
+    } else {
+        // TODO Cache-Control header for error based on policy.expires
+        // is not found the right error? maybe forbidden or bad gateway?
+        // prober policy judgement can be an enum instead of a bool to
+        // distinguish 4xx vs. 5xx failures, 4xx being an explicit opt out and
+        // 5xx for IO errors etc
+        Err(Error::NotFound)
+    }
+}
+
+fn parse_gateway_uri_from_path(path: &str, default: &GatewayUri) -> Result<GatewayUri, BoxError> {
+    if path.is_empty() || path == "/" {
+        return Ok(default.clone());
+    }
+
+    let path = &path[1..];
+
+    if "http://" == &path[..7] || "https://" == &path[..8] {
+        GatewayUri::from_str(path)
+    } else {
+        Ok(Authority::from_str(path)?.into())
+    }
 }
 
 fn handle_preflight() -> Response<BoxBody<Bytes, hyper::Error>> {
@@ -186,8 +250,9 @@ async fn health_check() -> Response<BoxBody<Bytes, hyper::Error>> { Response::ne
 async fn handle_ohttp_relay(
     req: Request<Incoming>,
     config: &RelayConfig,
+    gateway: GatewayUri,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Error> {
-    let fwd_req = into_forward_req(req, &config.default_gateway)?;
+    let fwd_req = into_forward_req(req, gateway)?;
     forward_request(fwd_req, config).await.map(|res| {
         let (parts, body) = res.into_parts();
         let boxed_body = BoxBody::new(body);
@@ -198,37 +263,34 @@ async fn handle_ohttp_relay(
 /// Convert an incoming request into a request to forward to the target gateway server.
 #[instrument]
 fn into_forward_req(
-    mut req: Request<Incoming>,
-    gateway_origin: &GatewayUri,
-) -> Result<Request<Incoming>, Error> {
-    if req.method() != hyper::Method::POST {
+    req: Request<Incoming>,
+    gateway_origin: GatewayUri,
+) -> Result<Request<BoxBody<Bytes, hyper::Error>>, Error> {
+    let (head, body) = req.into_parts();
+
+    if head.method != hyper::Method::POST {
         return Err(Error::MethodNotAllowed);
     }
-    let content_type_header = req.headers().get(CONTENT_TYPE).cloned();
-    let content_length_header = req.headers().get(CONTENT_LENGTH).cloned();
-    req.headers_mut().clear();
-    req.headers_mut().insert(HOST, OHTTP_RELAY_HOST.to_owned());
-    if content_type_header != Some(EXPECTED_MEDIA_TYPE.to_owned()) {
+
+    if head.headers.get(CONTENT_TYPE) != Some(&EXPECTED_MEDIA_TYPE) {
         return Err(Error::UnsupportedMediaType);
     }
-    if let Some(content_length) = content_length_header {
-        req.headers_mut().insert(CONTENT_LENGTH, content_length);
+
+    let mut builder = Request::builder()
+        .method(hyper::Method::POST)
+        .uri(gateway_origin.rfc_9540_url())
+        .header(CONTENT_TYPE, EXPECTED_MEDIA_TYPE);
+
+    if let Some(content_length) = head.headers.get(CONTENT_LENGTH) {
+        builder = builder.header(CONTENT_LENGTH, content_length);
     }
 
-    if let Some(path) = req.uri().path_and_query() {
-        if path != "/" {
-            return Err(Error::NotFound);
-        }
-    }
-
-    *req.uri_mut() = gateway_origin.rfc_9540_url();
-
-    Ok(req)
+    builder.body(BoxBody::new(body)).map_err(|e| Error::InternalServerError(Box::new(e)))
 }
 
 #[instrument]
 async fn forward_request(
-    req: Request<Incoming>,
+    req: Request<BoxBody<Bytes, hyper::Error>>,
     config: &RelayConfig,
 ) -> Result<Response<Incoming>, Error> {
     config.client.request(req).await.map_err(|_| Error::BadGateway)

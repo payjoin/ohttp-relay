@@ -6,9 +6,10 @@ use http::Uri;
 use crate::error::BoxError;
 
 pub(crate) const RFC_9540_GATEWAY_PATH: &str = "/.well-known/ohttp-gateway";
+const ALLOWED_PURPOSES_PATH_AND_QUERY: &str = "/.well-known/ohttp-gateway?allowed_purposes";
 
 /// A normalized gateway origin URI with a default port if none is specified.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct GatewayUri {
     scheme: Scheme,
     authority: Authority,
@@ -34,9 +35,6 @@ impl GatewayUri {
         Ok(Self { scheme, authority })
     }
 
-    // TODO remove
-    pub fn authority(&self) -> &Authority { &self.authority }
-
     pub fn from_static(string: &'static str) -> Self {
         Uri::from_static(string)
             .try_into()
@@ -61,8 +59,15 @@ impl GatewayUri {
             .expect("building RFC 9540 uri from scheme and authority must succeed")
     }
 
-    pub async fn to_socket_addr(&self) -> Option<std::net::SocketAddr> {
-        self.to_socket_addrs().await.ok()?.next()
+    pub fn probe_url(&self) -> Uri {
+        self.to_uri_builder()
+            .path_and_query(ALLOWED_PURPOSES_PATH_AND_QUERY)
+            .build()
+            .expect("building RFC 9540 uri from scheme and authority must succeed")
+    }
+
+    pub async fn to_socket_addr(&self) -> std::io::Result<Option<std::net::SocketAddr>> {
+        Ok(self.to_socket_addrs().await?.next())
     }
 
     pub async fn to_socket_addrs(
@@ -92,6 +97,13 @@ impl TryFrom<Uri> for GatewayUri {
         let authority = parts.authority.ok_or::<BoxError>("URI must have an authority".into())?;
 
         Self::new(scheme, authority)
+    }
+}
+
+impl From<Authority> for GatewayUri {
+    fn from(authority: Authority) -> Self {
+        Self::new(Scheme::HTTPS, authority)
+            .expect("constructing GatewayUri with valid authority must succeed")
     }
 }
 
@@ -129,23 +141,23 @@ mod test {
     fn default_port() {
         let uri = GatewayUri::from_static("http://payjo.in");
         assert_eq!(
-            uri.authority().port_u16(),
+            uri.authority.port_u16(),
             Some(80),
             "default port should be made explicit for http scheme"
         );
 
         let uri = GatewayUri::from_static("https://payjo.in");
         assert_eq!(
-            uri.authority().port_u16(),
+            uri.authority.port_u16(),
             Some(443),
             "default port should be made explicit for https scheme"
         );
 
         let uri = GatewayUri::from_static("https://payjo.in:80");
-        assert_eq!(uri.authority().port_u16(), Some(80), "explicit port should override default");
+        assert_eq!(uri.authority.port_u16(), Some(80), "explicit port should override default");
 
         let uri = GatewayUri::from_static("http://payjo.in:1234");
-        assert_eq!(uri.authority().port_u16(), Some(1234), "explicit port should override default");
+        assert_eq!(uri.authority.port_u16(), Some(1234), "explicit port should override default");
     }
 
     #[test]
