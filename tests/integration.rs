@@ -26,6 +26,16 @@ mod integration {
     use tokio::net::{TcpListener, TcpStream};
     use tokio::process::Command;
 
+    static INIT: std::sync::Once = std::sync::Once::new();
+
+    fn init_crypto_provider() {
+        INIT.call_once(|| {
+            rustls::crypto::ring::default_provider()
+                .install_default()
+                .expect("Failed to install default crypto provider");
+        });
+    }
+
     const ENCAPSULATED_REQ: &str = "010020000100014b28f881333e7c164ffc499ad9796f877f4e1051ee6d31bad19dec96c208b4726374e469135906992e1268c594d2a10c695d858c40a026e7965e7d86b83dd440b2c0185204b4d63525";
     const ENCAPSULATED_RES: &str =
         "c789e7151fcba46158ca84b04464910d86f9013e404feea014e7be4a441f234f857fbd";
@@ -33,6 +43,7 @@ mod integration {
     /// See: https://www.ietf.org/rfc/rfc9458.html#name-complete-example-of-a-reque
     #[tokio::test]
     async fn test_request_response_tcp() {
+        init_crypto_provider();
         let gateway_port = find_free_port();
         let gateway = GatewayUri::from_str(&format!("http://0.0.0.0:{}", gateway_port)).unwrap();
 
@@ -68,6 +79,7 @@ mod integration {
 
     #[tokio::test]
     async fn test_request_response_socket() -> Result<(), Box<dyn std::error::Error>> {
+        init_crypto_provider();
         let temp_dir = std::env::temp_dir();
         let socket_path = temp_dir.as_path().join("test.socket");
 
@@ -235,6 +247,7 @@ mod integration {
 
             #[tokio::test]
             async fn test_ws_bootstrap() {
+                init_crypto_provider();
                 test_bootstrap(|relay_port, gateway, cert| {
                     Box::pin(ohttp_keys_ws_client(relay_port, gateway.clone(), cert))
                 })
@@ -287,6 +300,7 @@ mod integration {
 
             #[tokio::test]
             async fn test_connect_bootstrap() {
+                init_crypto_provider();
                 test_bootstrap(|relay_port, gateway, cert| {
                     Box::pin(ohttp_keys_connect_client(relay_port, gateway.clone(), cert))
                 })
@@ -300,15 +314,21 @@ mod integration {
             ) {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-                let mut root_store = rustls::RootCertStore::empty();
-                root_store.add(cert).unwrap();
-                let config = tokio_rustls::rustls::ClientConfig::builder()
-                    .with_root_certificates(root_store)
-                    .with_no_client_auth();
-                let proxy =
-                    ureq::Proxy::new(format!("http://0.0.0.0:{}/", relay_port).as_str()).unwrap();
-                let https =
-                    ureq::AgentBuilder::new().tls_config(Arc::new(config)).proxy(proxy).build();
+                // Convert to owned Vec and leak to get &'static [u8]
+                let cert_static = cert.to_vec().leak();
+                let cert = ureq::tls::Certificate::from_der(cert_static);
+                let config = ureq::config::Config::builder()
+                    .tls_config(
+                        ureq::tls::TlsConfig::builder()
+                            .root_certs(ureq::tls::RootCerts::Specific(Arc::new(vec![cert])))
+                            .build(),
+                    )
+                    .proxy(Some(
+                        ureq::Proxy::new(format!("http://0.0.0.0:{}/", relay_port).as_str())
+                            .unwrap(),
+                    ))
+                    .build();
+                let https = ureq::Agent::new_with_config(config);
                 let url = gateway.rfc_9540_url();
                 println!("gateway for proxy: {:?}", url);
                 let res = tokio::task::spawn_blocking(move || {
@@ -317,8 +337,8 @@ mod integration {
                 .await
                 .unwrap();
                 assert_eq!(res.status(), 200);
-                assert_eq!(res.header("content-type").unwrap(), "application/ohttp-keys");
-                assert_eq!(res.header("content-length").unwrap(), "45");
+                assert_eq!(res.headers().get("content-type").unwrap(), "application/ohttp-keys");
+                assert_eq!(res.headers().get("content-length").unwrap(), "45");
             }
         }
 
