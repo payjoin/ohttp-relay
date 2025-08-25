@@ -9,7 +9,7 @@ keywords = ["ohttp", "privacy"]
 categories = ["web-programming", "network-programming"]
 license = "MITNFA"
 edition = "2021"
-rust-version = "1.63.0"
+rust-version = "1.85.0"
 resolver = "2"
 exclude = ["tests"]
 
