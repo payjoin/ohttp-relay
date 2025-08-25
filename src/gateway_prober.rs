@@ -398,7 +398,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use mockito::mock;
+    use mockito::Server;
     use tokio::time::advance;
 
     use super::*;
@@ -555,12 +555,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_opt_in() {
-        let url = GatewayUri::from_str(&mockito::server_url())
-            .expect("must be able to parse mock server URL");
+        let mut server = Server::new_async().await;
+        let url =
+            GatewayUri::from_str(&server.url()).expect("must be able to parse mock server URL");
 
         let prober = Prober::default();
 
-        let mock_opt_in = mock("GET", RFC_9540_GATEWAY_PATH)
+        let mock_opt_in = server
+            .mock("GET", RFC_9540_GATEWAY_PATH)
             .match_query(mockito::Matcher::Regex("^allowed_purposes$".into()))
             .with_header(hyper::header::CONTENT_TYPE.as_str(), ALLOWED_PURPOSES_CONTENT_TYPE)
             .with_body(BIP77_OPT_IN_RESPONSE)
@@ -580,8 +582,9 @@ mod tests {
     #[tokio::test]
     async fn test_assert_opt_in() {
         // no mock handlers, so any request should fail
-        let url = GatewayUri::from_str(&mockito::server_url())
-            .expect("must be able to parse mock server URL");
+        let server = Server::new_async().await;
+        let url =
+            GatewayUri::from_str(&server.url()).expect("must be able to parse mock server URL");
 
         let prober = Prober::default();
 
@@ -598,12 +601,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_no_opt_in() {
-        let url = GatewayUri::from_str(&mockito::server_url())
-            .expect("must be able to parse mock server URL");
+        let mut server = Server::new_async().await;
+        let url =
+            GatewayUri::from_str(&server.url()).expect("must be able to parse mock server URL");
 
         let prober = Prober::default();
 
-        let mock_only_rfc_9540 = mock("GET", RFC_9540_GATEWAY_PATH)
+        let mock_only_rfc_9540 = server
+            .mock("GET", RFC_9540_GATEWAY_PATH)
             .match_query(mockito::Matcher::Regex("^allowed_purposes$".into()))
             .with_header(hyper::header::CONTENT_TYPE.as_str(), "application/ohttp-keys")
             .with_body(b"\x00") // note: not actually a valid ohttp-keys encoding
@@ -619,12 +624,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_404() {
-        let url = GatewayUri::from_str(&mockito::server_url())
-            .expect("must be able to parse mock server URL");
+        let mut server = Server::new_async().await;
+        let url =
+            GatewayUri::from_str(&server.url()).expect("must be able to parse mock server URL");
 
         let prober = Prober::default();
 
-        let mock_not_found = mock("GET", RFC_9540_GATEWAY_PATH)
+        let mock_not_found = server
+            .mock("GET", RFC_9540_GATEWAY_PATH)
             .match_query(mockito::Matcher::Regex("^allowed_purposes$".into()))
             .with_status(404)
             .with_body("not found")
@@ -637,8 +644,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_inflight_deduplication() {
-        let url = GatewayUri::from_str(&mockito::server_url())
-            .expect("must be able to parse mock server URL");
+        let mut server = Server::new_async().await;
+        let url =
+            GatewayUri::from_str(&server.url()).expect("must be able to parse mock server URL");
 
         let prober = Prober::default();
 
@@ -651,10 +659,11 @@ mod tests {
             let condvar = condvar.clone();
             let cvmutex = cvmutex.clone();
 
-            mock("GET", RFC_9540_GATEWAY_PATH)
+            server
+                .mock("GET", RFC_9540_GATEWAY_PATH)
                 .match_query(mockito::Matcher::Regex("^allowed_purposes$".into()))
                 .with_header(hyper::header::CONTENT_TYPE.as_str(), ALLOWED_PURPOSES_CONTENT_TYPE)
-                .with_body_from_fn(move |w| {
+                .with_chunked_body(move |w| {
                     // track how many requests have been received
                     let mut c = counter.lock().unwrap();
                     *c += 1;
