@@ -28,11 +28,11 @@ http = "1"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-rustls = { version = "0.26", features = ["webpki-roots"] }
-hyper-tungstenite = { version = "0.13", optional = true }
+hyper-tungstenite = { version = "0.18.0", optional = true }
 hyper-util = { version = "0.1", features = ["client-legacy"] }
 rustls = { version = "0.22", optional = true }
 tokio = { version = "1", features = ["io-std", "macros", "net", "rt-multi-thread"] }
-tokio-tungstenite = { version = "0.21", optional = true }
+tokio-tungstenite = { version = "0.27.0", optional = true }
 tokio-util = { version = "0.7", features = ["net", "codec"] }
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
