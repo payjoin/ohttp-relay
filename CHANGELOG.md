@@ -1,5 +1,25 @@
 # ohttp-relay Changelog
 
+## 0.0.11
+
+### MSRV Update and Dependency Modernization
+
+This release updates the minimum supported Rust version (MSRV) to 1.85.0, following the Debian stable update and aligning with other Bitcoin ecosystem projects. Along with this MSRV bump, all dependencies have been updated to their latest compatible versions.
+
+#### Key Changes
+
+- **MSRV bump to 1.85.0** - Updated minimum supported Rust version for better ecosystem alignment
+- **Rustls dependency updates** - Updated rustls dependencies while maintaining ring crypto provider support
+- **Comprehensive dependency updates** - Updated tokio-tungstenite, hyper-tungstenite, mockito, and other dependencies to match the new MSRV
+- **API compatibility** - Adapted to API changes in updated dependencies, particularly mockito and tungstenite
+
+#### Technical Details
+
+- Rustls updates continue to use ring's crypto provider by initializing the default provider
+- Mockito API updates have been integrated to maintain testing functionality
+- Tungstenite WebSocket implementation updated for improved compatibility
+- All dependency updates maintain backward compatibility with existing functionality
+
 ## 0.0.10
 
 ### Enable opt-in Gateway reachability for BIP 77
