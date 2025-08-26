@@ -7,6 +7,10 @@ use tracing_subscriber::{fmt, EnvFilter};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install default crypto provider");
+
     init_tracing();
     let port_env = std::env::var("PORT");
     let unix_socket_env = std::env::var("UNIX_SOCKET");

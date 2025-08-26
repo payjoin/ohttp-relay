@@ -102,8 +102,7 @@ where
                     self_mut.read_buffer.drain(..len);
                     Poll::Ready(Ok(()))
                 }
-                Message::Ping(data) =>
-                    start_send(&mut self_mut.ws_stream, Message::Pong(data.to_vec())),
+                Message::Ping(data) => start_send(&mut self_mut.ws_stream, Message::Pong(data)),
                 Message::Pong(_) => {
                     // Usually, no action is needed on pong messages
                     Poll::Pending
@@ -143,7 +142,7 @@ where
         let self_mut = self.get_mut();
         match Pin::new(&mut self_mut.ws_stream).poll_ready(cx) {
             Poll::Ready(Ok(())) =>
-                start_send(&mut self_mut.ws_stream, Message::Binary(data.to_vec()))
+                start_send(&mut self_mut.ws_stream, Message::Binary(data.to_vec().into()))
                     .map(|r| r.map(|_| data.len())),
             Poll::Ready(Err(e)) => Poll::Ready(Err(map_ws_error(e))),
             Poll::Pending => Poll::Pending,
