@@ -44,5 +44,5 @@ rcgen = "0.12"
 tempfile = "3.20.0"
 tokio = { version = "1.47.1", features = ["process", "test-util"] }
 tokio-rustls = { version = "0.26.2", default-features=false, features = ["ring"]}
-ureq = "3.0.12"
+reqwest = { version = "0.12.23", default-features= false ,features = ["rustls-tls", "blocking"] }
 uuid = { version = "1.18.0", features = ["v4"] }

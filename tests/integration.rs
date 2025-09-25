@@ -313,29 +313,23 @@ mod integration {
                 cert: CertificateDer<'_>,
             ) {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-
-                // Convert to owned Vec and leak to get &'static [u8]
-                let cert_static = cert.to_vec().leak();
-                let cert = ureq::tls::Certificate::from_der(cert_static);
-                let config = ureq::config::Config::builder()
-                    .tls_config(
-                        ureq::tls::TlsConfig::builder()
-                            .root_certs(ureq::tls::RootCerts::Specific(Arc::new(vec![cert])))
-                            .build(),
+                
+                let client = reqwest::Client::builder()
+                    .use_rustls_tls()
+                    .tls_built_in_root_certs(false)
+                    .add_root_certificate(
+                        reqwest::Certificate::from_der(cert.as_ref())
+                            .expect("invalid cert der"),
                     )
-                    .proxy(Some(
-                        ureq::Proxy::new(format!("http://0.0.0.0:{}/", relay_port).as_str())
-                            .unwrap(),
-                    ))
-                    .build();
-                let https = ureq::Agent::new_with_config(config);
+                    .proxy(
+                        reqwest::Proxy::http(format!("http://0.0.0.0:{}", relay_port))
+                            .expect("invalid proxy"),
+                    )
+                    .build()
+                    .expect("failed building reqwest client");
                 let url = gateway.rfc_9540_url();
                 println!("gateway for proxy: {:?}", url);
-                let res = tokio::task::spawn_blocking(move || {
-                    https.get(&url.to_string()).call().unwrap()
-                })
-                .await
-                .unwrap();
+                let res = client.get(url.to_string()).send().await.unwrap();
                 assert_eq!(res.status(), 200);
                 assert_eq!(res.headers().get("content-type").unwrap(), "application/ohttp-keys");
                 assert_eq!(res.headers().get("content-length").unwrap(), "45");
