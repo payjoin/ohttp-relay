@@ -5,7 +5,6 @@
     nixpkgs.url = "nixpkgs/nixos-25.05";
     crane = {
       url = "github:ipetkov/crane";
-      inputs.nixpkgs.follows = "nixpkgs";
     };
     flake-utils.url = "github:numtide/flake-utils";
   };
@@ -15,7 +14,7 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
 
-        craneLib = crane.lib.${system};
+        craneLib = crane.mkLib pkgs;
 
         nginxWithStream = pkgs.nginxMainline.overrideAttrs (oldAttrs: {
           configureFlags = oldAttrs.configureFlags ++ [
