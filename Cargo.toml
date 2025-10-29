@@ -35,7 +35,7 @@ tokio = { version = "1.47.1", features = ["io-std", "macros", "net", "rt-multi-t
 tokio-tungstenite = { version = "0.27.0", optional = true }
 tokio-util = { version = "0.7.16", features = ["net", "codec"] }
 tracing = "0.1.41"
-tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 
 [dev-dependencies]
 hex = { package = "hex-conservative", version = "0.1.1" }
