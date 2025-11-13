@@ -313,7 +313,6 @@ mod integration {
                 cert: CertificateDer<'_>,
             ) {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                
                 let client = reqwest::Client::builder()
                     .use_rustls_tls()
                     .tls_built_in_root_certs(false)
