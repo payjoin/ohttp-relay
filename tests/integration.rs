@@ -318,8 +318,7 @@ mod integration {
                     .use_rustls_tls()
                     .tls_built_in_root_certs(false)
                     .add_root_certificate(
-                        reqwest::Certificate::from_der(cert.as_ref())
-                            .expect("invalid cert der"),
+                        reqwest::Certificate::from_der(cert.as_ref()).expect("invalid cert der"),
                     )
                     .proxy(
                         reqwest::Proxy::http(format!("http://0.0.0.0:{}", relay_port))
