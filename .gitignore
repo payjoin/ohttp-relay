@@ -2,4 +2,5 @@
 /result
 /.direnv
 /.vscode
+Cargo.lock
 
