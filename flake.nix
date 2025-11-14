@@ -31,6 +31,8 @@
           };
           strictDeps = true;
 
+          cargoLock = ./Cargo-recent.lock;
+
           buildInputs = [
             nginxWithStream
           ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
