@@ -29,9 +29,7 @@ jobs:
           nix build .#nginx-with-stream -o nginx
           echo "$(pwd)/nginx/bin" >> $GITHUB_PATH
       - name: test ohttp-relay
-        run: |
-          cargo test --locked --verbose --all-features
-          cargo test --locked --verbose
+        run: RUST_LOG=debug bash contrib/test.sh
 
   fmt:
     runs-on: ubuntu-latest
