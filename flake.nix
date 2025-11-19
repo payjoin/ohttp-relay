@@ -69,5 +69,7 @@
             export PATH=${pkgs.rustup}/bin:$PATH
           '';
         };
-      });
+      }) // {
+        nixosModules.default = import ./nix/module.nix self;
+      };
 }
