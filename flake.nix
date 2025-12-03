@@ -2,7 +2,7 @@
   description = "Build a cargo project without extra checks";
 
   inputs = {
-    nixpkgs.url = "nixpkgs/nixos-25.05";
+    nixpkgs.url = "nixpkgs/nixos-25.11";
     crane = {
       url = "github:ipetkov/crane";
     };
